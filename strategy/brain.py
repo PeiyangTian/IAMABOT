@@ -1059,6 +1059,274 @@ class SuperStrategy:
         return action
 
 
+class SuperStrategyV2(SuperStrategy):
+    """SuperStrategy + healer-lock targeting + extractor slot raiding + endgame charge."""
+
+    RAID_CAPTURE_THRESHOLD = 0.35
+    RAID_MIN_HOME_EXTRACTORS = 4
+    RAID_COUNT = 2
+    ENDGAME_CHARGE_HP_FRAC = 0.20
+
+    # ---------------------------------------------------------------- extractor raiding
+
+    def _coordinated_actions(self, state: GameState, conf: GameConfig) -> FleetAction:
+        action = FleetAction.new()
+        self._production(state, conf, action)
+
+        allies = list(state.fleet_me)
+        enemies = list(state.fleet_other)
+        battles = [bot for bot in allies if bot.class_ == BotClass.Battle]
+        healers = [bot for bot in allies if bot.class_ == BotClass.Healer]
+        extractors = [bot for bot in allies if bot.class_ == BotClass.Extractor]
+        payload = state.payload_pos()
+        enemy_centre = _centroid(enemies, state.deposit_other.pos)
+        endgame = state.tick >= conf.max_ticks - conf.endgame_ticks
+        losing = state.capture < self.LOSING_CAPTURE
+
+        # 领先时选距离敌方矿区最近的 extractor 去占槽，其余留守自家矿区。
+        raider_count = 0
+        if (
+            state.capture > self.RAID_CAPTURE_THRESHOLD
+            and not endgame
+            and not losing
+            and len(extractors) > self.RAID_MIN_HOME_EXTRACTORS
+        ):
+            raider_count = min(self.RAID_COUNT, len(extractors) - self.RAID_MIN_HOME_EXTRACTORS)
+
+        by_enemy_dist = sorted(extractors, key=lambda b: b.pos.dist_sq(state.deposit_other.pos))
+        raiders = by_enemy_dist[:raider_count]
+        raider_ids = {b.id for b in raiders}
+        home_extractors = [b for b in extractors if b.id not in raider_ids]
+
+        slot_assignment = self._assign_miner_slots(home_extractors)
+        payload_for_miners = self._miner_payload_positions(state, max(1, len(home_extractors)))
+        for index, bot in enumerate(home_extractors):
+            bot_action = action.bots[bot.id]
+            if endgame or losing:
+                target = payload_for_miners[index % len(payload_for_miners)]
+                bot_action.move_action = self._spread_move(bot, target, allies, conf)
+                bot_action.turn_action = turn_towards(enemy_centre)
+                bot_action.special_action = SpecialAction.Extractor(mine=False)
+            else:
+                target = slot_assignment.get(bot.id, self.mine_slots[index % len(self.mine_slots)])
+                bot_action.move_action = self._spread_move(bot, target, allies, conf)
+                bot_action.turn_action = turn_towards(state.deposit_me.pos)
+                in_range = bot.pos.dist(state.deposit_me.pos) <= conf.bot.base_extract_range
+                can_see = line_of_sight(bot.pos, state.deposit_me.pos)
+                bot_action.special_action = SpecialAction.Extractor(mine=in_range and can_see)
+
+        enemy_dep = state.deposit_other.pos
+        for bot in raiders:
+            bot_action = action.bots[bot.id]
+            bot_action.move_action = self._spread_move(bot, enemy_dep, allies, conf)
+            bot_action.turn_action = turn_towards(enemy_dep)
+            in_range = bot.pos.dist(enemy_dep) <= conf.bot.base_extract_range
+            can_see = line_of_sight(bot.pos, enemy_dep)
+            bot_action.special_action = SpecialAction.Extractor(mine=in_range and can_see)
+
+        self._control_healers(state, conf, action, allies, healers, payload, enemy_centre)
+        fire_plans = self._control_battles(
+            state, conf, action, allies, enemies, battles, healers, payload, enemy_centre, losing
+        )
+        self._assign_coordinated_fire(state, conf, action, fire_plans, enemies)
+        return action
+
+    # ----------------------------------------------------------- endgame charge/self-destruct
+
+    def _control_battles(
+        self,
+        state: GameState,
+        conf: GameConfig,
+        action: FleetAction,
+        allies: list[BotState],
+        enemies: list[BotState],
+        battles: list[BotState],
+        healers: list[BotState],
+        payload: Vec2,
+        enemy_centre: Vec2,
+        losing: bool,
+    ) -> list[tuple[BotState, Vec2]]:
+        fire_plans = super()._control_battles(
+            state, conf, action, allies, enemies, battles, healers, payload, enemy_centre, losing
+        )
+        endgame = state.tick >= conf.max_ticks - conf.endgame_ticks
+        # 只在 endgame 且我方领先（payload 在对方半场）时才启动冲锋。
+        if not endgame or state.capture <= 0:
+            return fire_plans
+
+        new_plans: list[tuple[BotState, Vec2]] = []
+        for bot, dst in fire_plans:
+            if bot.health < self.ENDGAME_CHARGE_HP_FRAC * conf.bot.health:
+                nearby_enemies = [
+                    e for e in enemies
+                    if bot.pos.dist(e.pos) <= conf.bot.base_blaster_splash_radius * 2.0
+                ]
+                if len(nearby_enemies) >= 2:
+                    # 已被围，自爆。
+                    action.bots[bot.id].self_destruct = True
+                    continue
+                # 尚未入敌群，强制朝敌方中心冲。
+                action.bots[bot.id].move_action = self._spread_move(
+                    bot, enemy_centre, allies, conf
+                )
+                new_plans.append((bot, enemy_centre))
+            else:
+                new_plans.append((bot, dst))
+        return new_plans
+
+    # ---------------------------------------------------------------- healer-lock targeting
+
+    def _assign_coordinated_fire(
+        self,
+        state: GameState,
+        conf: GameConfig,
+        action: FleetAction,
+        fire_plans: list[tuple[BotState, Vec2]],
+        enemies: list[BotState],
+    ) -> None:
+        reserved: set[int] = set()
+        payload = state.payload_pos()
+        ready_shooters = [bot for bot, _ in fire_plans if bot.next_fire_tick <= state.tick]
+
+        # 第一步：对每个敌方 Healer，找距离最近且能打到的射手，一对一锁定。
+        enemy_healers = [
+            e for e in enemies
+            if e.class_ == BotClass.Healer and e.invulnerable_until_tick <= state.tick
+        ]
+        locked_shooter_ids: set[int] = set()
+
+        for healer in sorted(
+            enemy_healers,
+            key=lambda h: min(
+                (s.pos.dist_sq(h.pos) for s in ready_shooters), default=1e9
+            ),
+        ):
+            best_shooter = None
+            best_dist = float("inf")
+            for bot in ready_shooters:
+                if bot.id in locked_shooter_ids:
+                    continue
+                predicted = self._lead_pos(bot, healer, conf)
+                dist = bot.pos.dist(predicted)
+                if (
+                    dist <= conf.bot.blaster_range
+                    and self._shot_clear(state, conf, bot.pos, predicted)
+                    and dist < best_dist
+                ):
+                    best_dist = dist
+                    best_shooter = bot
+            if best_shooter is None:
+                continue
+
+            predicted = self._lead_pos(best_shooter, healer, conf)
+            desired = (predicted - best_shooter.pos).angle_deg()
+            rotation = _clamp(
+                diff_degrees(desired, best_shooter.angle),
+                -conf.bot.turn_speed,
+                conf.bot.turn_speed,
+            )
+            after_turn = best_shooter.angle + rotation
+            distance = max(0.01, best_shooter.pos.dist(predicted))
+            tolerance = max(
+                1.0, math.degrees(math.asin(min(0.99, conf.bot.radius / distance)))
+            )
+            action.bots[best_shooter.id].turn_action = turn_towards(predicted)
+            if abs(diff_degrees(desired, after_turn)) <= tolerance:
+                action.bots[best_shooter.id].special_action = SpecialAction.Battle(fire=True)
+                reserved.add(healer.id)
+            locked_shooter_ids.add(best_shooter.id)
+
+        # 第二步：剩余射手走原来的分配逻辑。
+        remaining = [bot for bot in ready_shooters if bot.id not in locked_shooter_ids]
+        remaining.sort(
+            key=lambda bot: min((bot.pos.dist_sq(e.pos) for e in enemies), default=1e9)
+        )
+        for shooter in remaining:
+            target = self._best_target(state, conf, shooter, enemies, payload, reserved)
+            if target is None:
+                continue
+            predicted = self._lead_pos(shooter, target, conf)
+            if shooter.pos.dist(predicted) > conf.bot.blaster_range:
+                continue
+            if not self._shot_clear(state, conf, shooter.pos, predicted):
+                continue
+            action.bots[shooter.id].turn_action = turn_towards(predicted)
+            desired = (predicted - shooter.pos).angle_deg()
+            rotation = _clamp(
+                diff_degrees(desired, shooter.angle),
+                -conf.bot.turn_speed,
+                conf.bot.turn_speed,
+            )
+            after_turn = shooter.angle + rotation
+            distance = max(0.01, shooter.pos.dist(predicted))
+            tolerance = max(
+                1.0, math.degrees(math.asin(min(0.99, conf.bot.radius / distance)))
+            )
+            if abs(diff_degrees(desired, after_turn)) <= tolerance:
+                action.bots[shooter.id].special_action = SpecialAction.Battle(fire=True)
+                reserved.add(target.id)
+
+
+class FinalStrategy(SuperStrategyV2):
+    """High-Battle / low-Healer build derived from tournament data analysis.
+
+    Observed optimal compositions across all tourney-6 matches:
+      Gang:       Bt25 Ex7 Hl1  avg-hp=9.2  (beats everyone)
+      terryduan:  Bt23 Ex8 Hl1  avg-hp=10.0 (beat IAMABOT)
+      IAMABOT v2: Bt18 Ex8 Hl6  avg-hp=9.7  (beaten by the above two)
+
+    Conclusion: 6 Healers costs 4–5 Battle bots. Gang/terryduan compensate with
+    faster kill speed that reduces incoming damage, making mass-healing unnecessary.
+    Target composition: Bt22 Ex8 Hl2 (32 bots), +4 Battle vs previous build.
+    """
+
+    TARGET_HEALERS = 2
+
+    def _production(self, state: GameState, conf: GameConfig, action: FleetAction) -> None:
+        allies = list(state.fleet_me)
+        enemies = list(state.fleet_other)
+        count = _counts(allies)
+        enemy_count = _counts(enemies)
+        total = len(allies)
+
+        # Extra Battle bots needed to punch through enemy sustain.
+        battle_bonus = max(0, enemy_count[BotClass.Healer] - 2) * 2
+
+        if count[BotClass.Battle] < 2:
+            next_class = BotClass.Battle
+        elif count[BotClass.Extractor] < self.TARGET_EXTRACTORS and state.capture > -0.5:
+            next_class = BotClass.Extractor
+        elif count[BotClass.Battle] < 6:
+            # Always reach 6 Battle before adaptive logic; don't delay with battle_bonus.
+            next_class = BotClass.Battle
+        else:
+            # 2 Healers come right after the opening 6 Battle + 8 Extractor ramp so they
+            # sustain the fleet through the first real engagement.
+            desired_battles = max(
+                6 + battle_bonus,
+                total - self.TARGET_EXTRACTORS - self.TARGET_HEALERS + 1,
+            )
+            if count[BotClass.Healer] < self.TARGET_HEALERS:
+                next_class = BotClass.Healer
+            elif count[BotClass.Battle] < desired_battles:
+                next_class = BotClass.Battle
+            elif count[BotClass.Extractor] < self.TARGET_EXTRACTORS:
+                next_class = BotClass.Extractor
+            else:
+                next_class = BotClass.Battle
+
+        if state.capture < self.LOSING_CAPTURE and next_class == BotClass.Extractor:
+            next_class = BotClass.Battle
+
+        action.fabricator_next = int(next_class)
+        in_endgame = state.tick >= conf.max_ticks - conf.endgame_ticks
+        action.rush_order = (
+            not in_endgame
+            and not state.fleet_me.is_full()
+            and state.fabricator_me.tokens >= conf.fabricator.rush_cost
+        )
+
+
 class ReferenceStrategy:
     """Deliberately simple active baseline used only by local A/B tests."""
 
