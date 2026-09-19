@@ -1,5 +1,11 @@
 /*
 !/strategy/
-**/__pycache__/
+!/tools/
 !/mm-config.toml
 !/.gitignore
+**/__pycache__/
+**/target/
+.DS_Store
+*.pyc
+/tools/arena/.work/
+/tools/arena/results/tmp*.jsonl

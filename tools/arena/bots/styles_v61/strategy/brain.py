@@ -19,18 +19,8 @@ The design follows the engine source rather than the prose rules:
   radius, independent of how many.  With no enemy fighter around, the army takes the circle
   and pushes.
 * When enemy fighters exist, every battle bot presses its nearest one and stands to shoot
-  just inside blaster range (9.3 of 10): all guns engage at once, converge on the enemy's
-  nearest bodies, and the enemy has to walk into our fire.  Head to head this beat every
-  firing-position planner we tried and every shorter distance, including our own v5/v6.
-* From the endgame on, if the payload sits on our half, every gun goes for the bodies
-  holding the circle at close range and two bots walk in to push it back: sitting still
-  there is a certain tiebreak loss.
-* Badly hurt battle bots (4 hp or less, one hit from dying) back out of reach while still
-  shooting (facing is independent of movement) and return once healed to 8; with a clear
-  local edge (1.5x) the stand-off distance closes from 9.3 to 7.5 to finish the fight.
-* Several adaptive responses (all-in home raid answer, counter-economy raid, zone-aware
-  distance, payload sidestep, strafing, payload leash) are implemented but off by default:
-  in the evaluation matrices each of them cost more games than it won.
+  once inside six tiles: all guns engage at once and converge on the enemy's nearest bodies.
+  Head to head this beat every firing-position planner we tried, including our own v5.
 
 All hot loops use plain floats; engine helpers are called through the raw C entry points
 to avoid building ``Vec2`` objects in the inner loops.
@@ -55,8 +45,6 @@ except Exception:  # pragma: no cover - defensive, the starterpack always has th
 
 
 DEBUG = bool(os.environ.get("IAMABOT_DEBUG"))
-# Per-match counters for the regression harness (tools/arena); off in tournament play.
-STATS = bool(os.environ.get("IAMABOT_STATS"))
 
 BATTLE = 0
 HEALER = 1
@@ -151,9 +139,9 @@ class AdvancedStrategy:
 
     # Production plan.  The opening is balanced: three extractors start the economy at
     # once (every top team opens with seven to ten, and an all-fighter opening falls behind
-    # them by mid game), ten battle bots and four healers win the first fight.  A third of
-    # the fighting force stays healers: sustain beat raw guns in every head-to-head.
-    OPENING = _env("IAMABOT_OPENING", "EBBEHBEBBHBBHBBHB")
+    # them by mid game), nine battle bots and five healers win the first fight.  A third
+    # of the fighting force stays healers: sustain beat raw guns in every head-to-head.
+    OPENING = _env("IAMABOT_OPENING", "EBBEHBHBEBHBBHBBB")
     EXTRACTOR_TARGET = _env("IAMABOT_EXTRACTORS", 6)
     HEALER_RATIO = _env("IAMABOT_HEALER_RATIO", 0.33)
     EXTRACTOR_CUTOFF = 4300  # an extractor built later cannot pay for itself
@@ -165,37 +153,9 @@ class AdvancedStrategy:
     RETREAT_RATIO = _env("IAMABOT_RETREAT_RATIO", 0.72)
 
     MOVE_MODE = _env("IAMABOT_MOVE", "press")
-    D_PRESS = _env("IAMABOT_D_PRESS", 9.3)
-    D_NEAR = _env("IAMABOT_D_NEAR", 6.0)
-    ZONE_MARGIN = _env("IAMABOT_ZONE_MARGIN", -3.0)
-    LATE_TICKS = _env("IAMABOT_LATE", 3000)
-    SIDESTEP = _env("IAMABOT_SIDESTEP", 0)
-    RETREAT_HP = _env("IAMABOT_RETREAT_HP", 4.0)
-    RETURN_HP = _env("IAMABOT_RETURN_HP", 8.0)
-    STRAFE = _env("IAMABOT_STRAFE", 0)
-    DYN_RANGE = _env("IAMABOT_DYN_RANGE", 1)
-    DYN_EDGE = _env("IAMABOT_DYN_EDGE", 1.5)
-    D_CLOSE = _env("IAMABOT_D_CLOSE", 7.5)
-    LEASH = _env("IAMABOT_LEASH", 0.0)
-    GUARDS = _env("IAMABOT_GUARDS", 1)
-    STEAL = _env("IAMABOT_STEAL", 0)
-    RACE_LEASH = _env("IAMABOT_RACE_LEASH", 10.0)
-    RACE_ABORT = _env("IAMABOT_RACE_ABORT", 0.8)
-    PUSH_MODE = _env("IAMABOT_PUSH", 1)
-    PUSH_NEAR = _env("IAMABOT_PUSH_NEAR", 12.0)
-    PUSH_LEASH = _env("IAMABOT_PUSH_LEASH", 11.0)
-    PUSH_HOME_R = _env("IAMABOT_PUSH_HOME_R", 11.0)
-    PUSH_ENTER = _env("IAMABOT_PUSH_ENTER", 120)
-    PUSH_EXIT = _env("IAMABOT_PUSH_EXIT", 60)
-    SIDESTEP_STALL = _env("IAMABOT_SIDESTEP_STALL", 300)
+    D_PRESS = _env("IAMABOT_D_PRESS", 6.0)
     PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
     STALL_TICKS = _env("IAMABOT_STALL", 250)
-    RAID = _env("IAMABOT_RAID", 0)
-    RAID_MIN_MINERS = _env("IAMABOT_RAID_MIN", 4)
-    RAID_EDGE = _env("IAMABOT_RAID_EDGE", 1.4)
-    HOME_R = _env("IAMABOT_HOME_R", 12.0)
-    HOME_EDGE = _env("IAMABOT_HOME_EDGE", 1.4)
-    HOME_MODE = _env("IAMABOT_HOME", "off")
 
     CHEAP_BUDGET = 60_000
 
@@ -214,25 +174,8 @@ class AdvancedStrategy:
         self.n_guards = 0
         self.capture_moved = 0
         self.last_capture = 0.0
-        self.raiders: set = set()
-        self.home = None
-        self.home_raid: list = []
-        self.home_ids: set = set()
-        self.home_phase = "gather"
-        self.home_since = 0
-        self.retreating: set = set()
-        self.push = False
-        self.push_count = 0
-        self.stealing = False
         self.debug_next = 0
         self.why: dict = {}
-        self.exc_count = 0
-        self.stats = {
-            "ticks": 0, "shots": 0, "ready_idle": 0, "blocked_payload": 0, "blocked_wall": 0,
-            "heal_try": 0, "heal_ok": 0, "retreat_enter": 0, "flank_enter": 0,
-            "race_ticks": 0, "defend_ticks": 0, "steal_ticks": 0,
-            "min_bank": 10**9, "fallbacks": 0, "exceptions": 0,
-        }
 
     # ================================================================== setup
 
@@ -299,7 +242,6 @@ class AdvancedStrategy:
         self.grid = fine
         self.coarse = [(x, y) for (x, y) in fine if (x * 2) % 2 == 1 and (y * 2) % 2 == 1]
         self.mine_slots = self._make_mine_slots()
-        self.steal_slots = self._slots_around(self.dep_other)
         self.init_done = True
 
     # ============================================================ engine calls
@@ -340,26 +282,6 @@ class AdvancedStrategy:
 
     # ================================================================ geometry
 
-    def _slots_around(self, dep) -> list:
-        """Spread mining spots with a clear ray to `dep` (used for the enemy deposit)."""
-        dx0, dy0 = dep
-        reach = self.EXTRACT_R + self.DEP_R - 0.35
-        min_r = self.DEP_R + self.HULL_SAFE
-        cand = []
-        for (x, y) in self.grid:
-            r = math.hypot(x - dx0, y - dy0)
-            if r < min_r or r > reach or not self._los(x, y, dx0, dy0):
-                continue
-            cand.append((-abs(r - 2.5), x, y))
-        cand.sort(reverse=True)
-        chosen: list = []
-        for _, x, y in cand:
-            if all((x - a) ** 2 + (y - b) ** 2 >= self.SPACING ** 2 for a, b in chosen):
-                chosen.append((x, y))
-            if len(chosen) >= 10:
-                break
-        return chosen
-
     def _make_mine_slots(self) -> list:
         dx0, dy0 = self.dep
         reach = self.EXTRACT_R + self.DEP_R - 0.35  # centre distance the ray still reaches
@@ -393,44 +315,16 @@ class AdvancedStrategy:
         try:
             if not self.init_done:
                 self._setup(state)
-            act = self._tick(state)
-            if STATS:
-                self._stat_tick(state)
-            return act
-        except Exception as exc:  # never let a bug take the whole fleet out of the match
-            self.exc_count += 1
-            self.stats["exceptions"] += 1
-            if self.exc_count <= 3 or self.exc_count % 500 == 0:
-                import sys
+            return self._tick(state)
+        except Exception:  # never let a bug take the whole fleet out of the match
+            if DEBUG:
                 import traceback
 
-                print(
-                    f"[iamabot] {type(exc).__name__} at tick {getattr(state, 'tick', '?')} "
-                    f"(#{self.exc_count}): {exc}",
-                    file=sys.stderr,
-                )
-                if DEBUG:
-                    traceback.print_exc()
+                traceback.print_exc()
             try:
-                self.stats["fallbacks"] += 1
                 return self._fallback(state)
             except Exception:
                 return FleetAction.new()
-
-    def _stat_tick(self, state: GameState) -> None:
-        st = self.stats
-        st["ticks"] += 1
-        st["min_bank"] = min(st["min_bank"], get_budget().remaining)
-        if self.home == "race":
-            st["race_ticks"] += 1
-        elif self.home == "defend":
-            st["defend_ticks"] += 1
-        if self.stealing:
-            st["steal_ticks"] += 1
-        if state.tick % 250 == 0 or state.tick >= self.MAX_T - 1:
-            import json as _json
-
-            print("[stats] " + _json.dumps(st), flush=True)
 
     # ================================================================ the tick
 
@@ -471,33 +365,9 @@ class AdvancedStrategy:
 
         # ---- movement ----------------------------------------------------------
         moves: dict[int, tuple] = {}
-        self._home_state()
-        ex, ey = self.dep_other
-        self.stealing = bool(
-            self.STEAL
-            and self.home is not None
-            and not any(
-                (e.x - ex) ** 2 + (e.y - ey) ** 2 < 9.0 ** 2 for e in self.op if e.cls == BATTLE
-            )
-        )
-        if self.HOME_MODE == "steal":
-            # Economy-only answer: the miners take the enemy's empty deposit, the army
-            # plays exactly as without the raid.
-            self.home = None
-        if self.home:
-            # All-in raid on our deposit: the whole army answers it (or races the payload);
-            # no trickle of guards, and the miners run.
-            guards = {}
-            self.raid = self.home_raid
-        elif self.GUARDS:
-            guards = self._pick_guards(battles, op)
-        else:
-            guards = {}
-            self._pick_guards([], op)  # still flags the raid so the miners run
+        guards = self._pick_guards(battles, op)
         self.n_guards = len(guards)
-        raid = self._pick_raiders(battles, guards)
-        moves.update(raid)
-        front = [b for b in battles if b.id not in guards and b.id not in raid]
+        front = [b for b in battles if b.id not in guards]
         self._battle_moves(front, moves)
         for b in battles:
             if b.id in guards:
@@ -545,7 +415,7 @@ class AdvancedStrategy:
                 f"[dbg] t={T} stance={self.stance} cap={state.capture:+.3f} "
                 f"near={self.my_near:.1f}v{self.op_near:.1f} all={self.my_all:.1f}v{self.op_all:.1f} "
                 f"B/H/E={len(battles)}/{len(healers)}/{len(extractors)} op={len(op)} "
-                f"zone={len(self.me_in_zone)}v{len(self.op_in_zone)} guards={self.n_guards} raid={len(self.raiders)} home={self.home}/{self.home_phase} steal={self.stealing} "
+                f"zone={len(self.me_in_zone)}v{len(self.op_in_zone)} guards={self.n_guards} "
                 f"AC=({self.AC[0]:.0f},{self.AC[1]:.0f}) "
                 f"tok={state.fabricator_me.tokens:.0f} bank={b.remaining} last={b.last_charge} "
                 f"why={self.why}",
@@ -690,87 +560,6 @@ class AdvancedStrategy:
 
     # ================================================================ guards
 
-    def _home_state(self) -> None:
-        """Detect an all-in raid on our deposit (Gang-style: most of the enemy army plus
-        its extractors take our deposit) and choose the answer.
-
-        defend: we are clearly stronger.  The army first gathers at a staging point just
-        outside the raiders' reach, then strikes together, so it never files through a
-        corridor into an entrenched group one bot at a time (the way v6.1 lost to Gang).
-        race:   we are not.  The raiders are ignored, the miners run, and the army takes
-        the payload; the enemy must come back and fight on ground we chose, or lose."""
-        dx0, dy0 = self.dep
-        raid = [
-            e
-            for e in self.op_fighters
-            if (e.x - dx0) ** 2 + (e.y - dy0) ** 2 < self.HOME_R ** 2
-        ]
-        R = sum(self._power(e) for e in raid)
-        self.home_raid = raid
-        self.home_ids = {e.id for e in raid}
-        M = self.my_all
-        if not raid or R < 1.0:
-            self.home = None
-            return
-        if self.HOME_MODE == "off":
-            self.home = None
-            return
-        if self.home is None:
-            if R >= 2.5 and R >= 0.5 * self.op_all:
-                self.home = "defend" if M >= self.HOME_EDGE * R + 1.0 else "race"
-                if self.HOME_MODE in ("defend", "race", "steal"):
-                    self.home = "race" if self.HOME_MODE == "steal" else self.HOME_MODE
-                self.home_phase = "gather"
-                self.home_since = self.T
-            return
-        if self.HOME_MODE in ("defend", "race", "steal"):
-            return
-        if self.home == "race" and M >= (self.HOME_EDGE + 0.2) * R + 1.0:
-            self.home = "defend"
-            self.home_phase = "gather"
-            self.home_since = self.T
-        elif self.home == "defend" and M < 1.0 * R:
-            self.home = "race"
-
-    def _home_gather(self, front, moves) -> bool:
-        """Gather phase of the home defence.  Returns True while still gathering."""
-        if self.home_phase != "gather":
-            return False
-        raid = self.home_raid
-        ax, ay = self.AC
-        cache = self.__dict__.get("_stage_cache")
-        if cache and self.T - cache[0] < 30:
-            sx, sy = cache[1]
-        else:
-            sx, sy = self._staging(ax, ay, raid, self.RANGE + 1.5)
-            self._stage_cache = (self.T, (sx, sy))
-        near = sum(1 for b in front if (b.x - sx) ** 2 + (b.y - sy) ** 2 < 4.0 ** 2)
-        close = any((e.x - sx) ** 2 + (e.y - sy) ** 2 < (self.RANGE + 0.5) ** 2 for e in raid)
-        if near >= 0.75 * len(front) or close or self.T - self.home_since > 350:
-            self.home_phase = "strike"
-            return False
-        for b in front:
-            moves[b.id] = self._nav(b.x, b.y, sx, sy)
-        return True
-
-    def _staging(self, fx, fy, targets, stop):
-        """Walk the navigation route from (fx, fy) toward the targets' centroid and stop
-        at the first point `stop` away from the nearest of them."""
-        tx = sum(e.x for e in targets) / len(targets)
-        ty = sum(e.y for e in targets) / len(targets)
-        x, y = fx, fy
-        stop2 = stop * stop
-        for _ in range(160):
-            if min((e.x - x) ** 2 + (e.y - y) ** 2 for e in targets) <= stop2:
-                break
-            dx, dy = self._nav(x, y, tx, ty)
-            n = math.hypot(dx, dy)
-            if n < 1e-6:
-                break
-            x += dx / n * 0.5
-            y += dy / n * 0.5
-        return x, y
-
     def _pick_guards(self, battles, op) -> dict:
         """Battle bots peeled off to protect the extractors.  Only a force that can win
         the local fight is sent; against a raid that big the miners run instead, so the
@@ -816,54 +605,6 @@ class AdvancedStrategy:
             out[b.id] = (gx, gy)
         return out
 
-    def _pick_raiders(self, battles, guards) -> dict:
-        """Counter-economy raid.  Economy-first opponents (the top of the leaderboard opens
-        with 7-10 extractors) park their miners on their own deposit while the army is
-        elsewhere.  When those miners sit unguarded, a small squad walks over and kills
-        them; the enemy's reinforcements dry up and the game ends instead of stalling.
-        Returns {bot id: move} for the squad."""
-        T = self.T
-        ex, ey = self.dep_other
-        miners = [
-            e for e in self.op if e.cls == EXTRACTOR and (e.x - ex) ** 2 + (e.y - ey) ** 2 < 7.0 ** 2
-        ]
-        active = bool(self.raiders)
-        pool = [b for b in battles if b.id not in guards]
-        if (
-            not self.RAID
-            or T < 600
-            or len(miners) < (2 if active else self.RAID_MIN_MINERS)
-            or len(pool) < 6
-            or self.my_all < self.RAID_EDGE * self.op_all
-        ):
-            self.raiders = set()
-            return {}
-        defenders = [
-            e for e in self.op_fighters if (e.x - ex) ** 2 + (e.y - ey) ** 2 < 11.0 ** 2
-        ]
-        need = max(3, int(1.5 * sum(self._power(e) for e in defenders) + 2.5))
-        cap = max(3, len(pool) // 3)
-        if need > cap:
-            self.raiders = set()  # too well defended to be worth a detachment
-            return {}
-        current = [b for b in pool if b.id in self.raiders]
-        others = sorted(
-            (b for b in pool if b.id not in self.raiders),
-            key=lambda b: (b.x - ex) ** 2 + (b.y - ey) ** 2,
-        )
-        squad = (current + others[: max(0, need - len(current))])[:cap]
-        self.raiders = {b.id for b in squad}
-        out = {}
-        stand2 = 5.0 ** 2
-        for b in squad:
-            m = min(miners, key=lambda o: (o.x - b.x) ** 2 + (o.y - b.y) ** 2)
-            d2 = (m.x - b.x) ** 2 + (m.y - b.y) ** 2
-            if d2 > stand2 or not self._los(b.x, b.y, m.x, m.y):
-                out[b.id] = self._nav(b.x, b.y, m.x, m.y)
-            else:
-                out[b.id] = (0.0, 0.0)
-        return out
-
     def _flee_point(self, x, y, threats):
         """A nearby standable point far from the given threats."""
         best = None
@@ -882,52 +623,13 @@ class AdvancedStrategy:
 
     def _battle_moves(self, front, moves) -> None:
         """Press: every battle bot closes on its nearest enemy fighter until it is inside
-        `D_PRESS` (just inside blaster range), then stands and shoots.  All guns engage at once and converge on the enemy's nearest bodies, which
+        `D_PRESS` with a clear line (no wall, not behind the payload), then stands and
+        shoots.  All guns engage at once and converge on the enemy's nearest bodies, which
         beat every formation we tried head to head.  With no enemy fighter anywhere the
         army takes the capture circle and pushes."""
         if not front:
             return
         fighters = self.op_fighters
-        if self.PUSH_MODE:
-            fighters = self._push_filter(front, fighters)
-        if self.LEASH > 0:
-            # Payload-centred army (what noeyedeer and JaniceKeepTalking do): only chase
-            # enemies near the payload.  Raiders parked on our deposit are ignored and the
-            # army keeps pushing; with nobody near the payload it takes the circle.
-            px0, py0 = self.P
-            L2 = self.LEASH ** 2
-            fighters = [e for e in fighters if (e.px - px0) ** 2 + (e.py - py0) ** 2 <= L2]
-        if self.home == "race":
-            # Leave the raiders on our deposit; they are not worth a corridor fight.  The
-            # army escorts the payload: it fights only what comes near it and otherwise
-            # sits in the circle pushing (noeyedeer's answer to Gang, match 260).
-            px0, py0 = self.P
-            L2 = self.RACE_LEASH ** 2
-            others = [e for e in fighters if e.id not in self.home_ids]
-            near = [e for e in others if (e.px - px0) ** 2 + (e.py - py0) ** 2 <= L2]
-            # Safety valve: if a real army gathers around the payload (the raiders coming
-            # back, or reinforcements near their spawn), stop racing and fight it properly.
-            if sum(self._power(e) for e in near) >= self.RACE_ABORT * max(self.my_near, 1.0):
-                fighters = others
-            else:
-                fighters = near
-        elif self.home == "defend":
-            if self._home_gather(front, moves):
-                return
-            fighters = self.home_raid
-        # Late and behind on the payload: sitting still is a certain tiebreak loss, so every
-        # gun goes for the bodies holding the circle, at close range.
-        late_behind = (
-            self.LATE_TICKS > 0
-            and self.T > self.MAX_T - self.LATE_TICKS
-            and self.capture <= 0.0
-        )
-        if late_behind:
-            px, py = self.P
-            zr2 = (self.CAP_R + 1.5) ** 2
-            holders = [e for e in self.op if (e.px - px) ** 2 + (e.py - py) ** 2 <= zr2]
-            if holders:
-                fighters = holders
         if self.MOVE_MODE == "slots" or not fighters:
             return self._slot_moves(front, moves)
         D = self.D_PRESS
@@ -936,71 +638,20 @@ class AdvancedStrategy:
         # Tiebreak insurance: armies parked on either side of a wall never shoot, and at
         # max_ticks the payload's side decides.  If it sits on our half, unmoved, with no
         # enemy in the circle, two bots walk in and push it back; ahead, nothing changes.
-        if late_behind or (
+        if (
             self.capture <= 0.02
             and self.T - self.capture_moved > self.STALL_TICKS
             and self.T > 1500
             and not self.op_in_zone
         ):
             front = self._anchor_duty(front, moves)
-        px, py = self.P
-        # Only in a frozen standoff (payload unmoved for a while): in a live fight the
-        # formation must hold.
-        sidestep_ok = self.SIDESTEP and self.T - self.capture_moved > self.SIDESTEP_STALL
-        zone2 = (self.CAP_R + self.ZONE_MARGIN) ** 2
-        Dn2 = self.D_NEAR ** 2
-        # Dynamic range: with a clear local edge, close in to finish the fight faster.
-        if self.DYN_RANGE and self.my_near >= self.DYN_EDGE * self.op_near + 1.0:
-            D2 = self.D_CLOSE ** 2
-        under_fire2 = (self.RANGE + 1.5) ** 2
-        safe2 = (self.RANGE + 2.5) ** 2
         for b in front:
             ranked = sorted(fighters, key=lambda o: (o.px - b.x) ** 2 + (o.py - b.y) ** 2)
             e = ranked[0]
             d2 = (e.px - b.x) ** 2 + (e.py - b.y) ** 2
-            if self.RETREAT_HP > 0:
-                # Rotate the badly hurt out of reach: facing is independent of movement, so
-                # a retreating bot keeps shooting back while the healers top it up, and the
-                # enemy is denied the kill.
-                if b.id in self.retreating and b.hp >= self.RETURN_HP:
-                    self.retreating.discard(b.id)
-                elif b.id not in self.retreating and b.hp <= self.RETREAT_HP and d2 <= under_fire2:
-                    self.retreating.add(b.id)
-                    self.stats["retreat_enter"] += 1
-                if b.id in self.retreating:
-                    if d2 < safe2:
-                        ax, ay = self._away(b.x, b.y, fighters)
-                        moves[b.id] = self._nav(b.x, b.y, b.x + ax * 3.0, b.y + ay * 3.0)
-                    else:
-                        moves[b.id] = (0.0, 0.0)
-                    continue
-            # Stand off at long range against an army in the open (it has to walk into our
-            # fire), but close in on bodies sitting on the payload: from far away the
-            # payload shields them, and they win the tiebreak by just sitting there.
-            lim2 = Dn2 if late_behind or (e.px - px) ** 2 + (e.py - py) ** 2 <= zone2 else D2
-            if d2 > lim2:
+            if d2 > D2:
                 moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
                 continue
-            if sidestep_ok and self._payload_blocks(b.x, b.y, e.px, e.py):
-                # Everything we could shoot hides behind the payload (a stack sitting on
-                # it): nobody fires and the circle stays theirs.  Step sideways out of the
-                # payload's shadow instead of standing still.
-                clear = False
-                for o in ranked[:4]:
-                    if (o.px - b.x) ** 2 + (o.py - b.y) ** 2 > shoot2:
-                        break
-                    if not self._payload_blocks(b.x, b.y, o.px, o.py):
-                        clear = True
-                        break
-                if not clear:
-                    lx, ly = e.px - b.x, e.py - b.y
-                    n = math.hypot(lx, ly) or 1.0
-                    nx, ny = -ly / n, lx / n
-                    # Move to the side of the line away from the payload centre.
-                    if (px - b.x) * nx + (py - b.y) * ny > 0:
-                        nx, ny = -nx, -ny
-                    moves[b.id] = self._nav(b.x, b.y, b.x + nx * 1.5, b.y + ny * 1.5)
-                    continue
             if self.PRESS_LOS:
                 # Stand only where we actually have a shot at someone; otherwise keep
                 # walking the route toward the nearest enemy until a line opens.
@@ -1016,62 +667,7 @@ class AdvancedStrategy:
                 if not clear:
                     moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
                     continue
-            if self.STRAFE:
-                # Side-step across the enemy's line of fire, flipping direction every few
-                # ticks.  (Experimental: hitscan with a 0.25 hull barely cares.)
-                lx, ly = e.px - b.x, e.py - b.y
-                n = math.hypot(lx, ly) or 1.0
-                sgn = 1.0 if ((self.T // self.STRAFE) + b.id) % 2 else -1.0
-                moves[b.id] = (-ly / n * sgn * 0.8, lx / n * sgn * 0.8)
-            else:
-                moves[b.id] = (0.0, 0.0)
-
-    def _push_filter(self, front, fighters) -> list:
-        """Push mode.  When the enemy's main force sits far from the payload (turtling on
-        its own deposit like DIBSFA in match 376, or raiding ours like Gang), chasing the
-        nearest enemy drags the army away and the circle stays empty.  Then only enemies
-        near the payload are pressed and everyone else takes the circle and pushes.  Leave
-        as soon as a real force comes back to the payload.  Both switches need the
-        condition to hold for a while (hysteresis)."""
-        px, py = self.P
-        near_r2 = self.PUSH_NEAR ** 2
-        op_near = sum(
-            self._power(e) for e in fighters if (e.px - px) ** 2 + (e.py - py) ** 2 <= near_r2
-        )
-        my_near = sum(
-            self._power(u)
-            for u in self.me
-            if u.cls != EXTRACTOR and (u.x - px) ** 2 + (u.y - py) ** 2 <= near_r2
-        )
-        op_all = self.op_all
-        # Only a passive enemy: its main force sitting on ITS OWN deposit.  A raid on ours
-        # is a different situation (the baseline answer beats it) and must not trigger.
-        hx, hy = self.dep_other
-        home_r2 = self.PUSH_HOME_R ** 2
-        op_home = sum(
-            self._power(e) for e in fighters if (e.px - hx) ** 2 + (e.py - hy) ** 2 <= home_r2
-        )
-        if not self.push:
-            want = (
-                self.T > 800
-                and op_all > 1.0
-                and op_home >= 0.5 * op_all
-                and op_near <= 0.6 * self.my_all
-            )
-            self.push_count = self.push_count + 1 if want else 0
-            if self.push_count >= self.PUSH_ENTER:
-                self.push, self.push_count = True, 0
-                self.stats["push_enter"] = self.stats.get("push_enter", 0) + 1
-        else:
-            leave = op_near >= 0.8 * max(my_near, 1.0) or op_home < 0.3 * op_all
-            self.push_count = self.push_count + 1 if leave else 0
-            if self.push_count >= self.PUSH_EXIT:
-                self.push, self.push_count = False, 0
-        if not self.push:
-            return fighters
-        self.stats["push_ticks"] = self.stats.get("push_ticks", 0) + 1
-        L2 = self.PUSH_LEASH ** 2
-        return [e for e in fighters if (e.px - px) ** 2 + (e.py - py) ** 2 <= L2]
+            moves[b.id] = (0.0, 0.0)
 
     def _anchor_duty(self, front, moves) -> list:
         """Send two battle bots into the capture circle; return the rest."""
@@ -1371,23 +967,6 @@ class AdvancedStrategy:
         used = set(self.mine_slot.values())
         raiders = [e for e in self.raid if e.cls == BATTLE]
         guarded = self.n_guards > 0
-        if self.stealing and self.steal_slots:
-            # The enemy army sits on our deposit, so theirs is empty: mine it instead.
-            ex, ey = self.dep_other
-            taken: set = set()
-            for u in sorted(extractors, key=lambda e: e.id):
-                k = min(
-                    (i for i in range(len(self.steal_slots)) if i not in taken),
-                    key=lambda i: (self.steal_slots[i][0] - u.x) ** 2 + (self.steal_slots[i][1] - u.y) ** 2,
-                    default=u.id % len(self.steal_slots),
-                )
-                taken.add(k)
-                tx, ty = self.steal_slots[k]
-                mx, my = self._nav(u.x, u.y, tx, ty)
-                moves[u.id] = (mx, my)
-                ox, oy = u.x + mx * self.SPEED, u.y + my * self.SPEED
-                out[u.id] = (_ang(ex - ox, ey - oy), True)
-            return out
         for u in sorted(extractors, key=lambda e: e.id):
             if raiders and not guarded:
                 close = [e for e in raiders if (e.x - u.x) ** 2 + (e.y - u.y) ** 2 < 10.5 ** 2]
@@ -1559,9 +1138,6 @@ class AdvancedStrategy:
                 and self._los(ox, oy, ex, ey)
             )
             out[h.id] = (a.id, want, ok)
-            if STATS:
-                self.stats["heal_try"] += 1
-                self.stats["heal_ok"] += 1 if ok else 0
         return out
 
     def _away(self, x, y, enemies):
@@ -1644,10 +1220,6 @@ class AdvancedStrategy:
             v += 5.0
         elif e.cls == EXTRACTOR:
             v -= 3.0
-            if self.raiders:
-                ex, ey = self.dep_other
-                if (e.x - ex) ** 2 + (e.y - ey) ** 2 < 7.0 ** 2:
-                    v += 9.0
         if (e.x - px) ** 2 + (e.y - py) ** 2 <= (self.CAP_R + 0.4) ** 2:
             v += 5.0
         v += (self.MAXHP - e.hp) * 0.9
@@ -1739,20 +1311,6 @@ class AdvancedStrategy:
             for v in victims:
                 claimed.add(v)
             out[b.id] = (want, True)
-        if STATS:
-            fired = {bid for bid, (_, go) in out.items() if go}
-            for b, ox, oy, want, after in ready:
-                if b.id in fired:
-                    self.stats["shots"] += 1
-                    continue
-                self.stats["ready_idle"] += 1
-                e = self.op_by_id.get(self.aim.get(b.id, -1))
-                if e is None:
-                    continue
-                if self._payload_blocks(ox, oy, e.px, e.py):
-                    self.stats["blocked_payload"] += 1
-                elif not self._los(ox, oy, e.px, e.py):
-                    self.stats["blocked_wall"] += 1
         return out
 
     def _why_not(self, b, ox, oy, after, op) -> None:
@@ -1849,55 +1407,31 @@ class AdvancedStrategy:
     # ================================================================ fallback
 
     def _fallback(self, state: GameState) -> FleetAction:
-        """Minimal but live controller used only if the main one raises: battle bots walk to
-        the payload, face the nearest enemy and fire when roughly on target with a line of
-        sight; healers heal the nearest wounded ally in reach; extractors mine."""
         act = FleetAction.new()
         conf = get_config()
-        T = state.tick
         act.fabricator_next = BATTLE
         act.rush_order = (
-            T < conf.max_ticks - conf.endgame_ticks
+            state.tick < conf.max_ticks - conf.endgame_ticks
             and not state.fleet_me.is_full()
             and state.fabricator_me.tokens >= conf.fabricator.rush_cost
         )
         payload = state.payload_pos()
         enemies = list(state.fleet_other)
-        allies = list(state.fleet_me)
-        rng2 = conf.bot.blaster_range ** 2
-        for bot in allies:
+        for bot in state.fleet_me:
             ba = act.bots[bot.id]
             tag = bot.special.tag
+            ba.move_action = move_bot(navigate_to(bot.pos, payload))
             if tag == EXTRACTOR:
                 ba.turn_action = turn_towards(state.deposit_me.pos)
                 ba.special_action = SpecialAction.Extractor(mine=True)
                 ba.move_action = move_bot(navigate_to(bot.pos, state.deposit_me.pos))
-                continue
-            ba.move_action = move_bot(navigate_to(bot.pos, payload))
-            if tag == HEALER:
-                hurt = [a for a in allies if a.id != bot.id and a.health < conf.bot.health - 0.1]
-                a = min(hurt, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
-                if a is None:
-                    ba.special_action = SpecialAction.Healer(fire=False, target=0)
-                    continue
-                ba.turn_action = turn_towards(a.pos)
-                off = abs(diff_degrees((a.pos - bot.pos).angle_deg(), bot.angle))
-                ok = bot.pos.dist(a.pos) <= conf.bot.base_heal_range - 0.1 and off <= 40.0
-                ba.special_action = SpecialAction.Healer(fire=ok, target=a.id)
-                continue
-            enemy = min(enemies, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
-            fire = False
-            if enemy is not None:
-                ba.turn_action = turn_towards(enemy.pos)
-                off = abs(diff_degrees((enemy.pos - bot.pos).angle_deg(), bot.angle))
-                fire = (
-                    bot.next_fire_tick <= T
-                    and bot.pos.dist_sq(enemy.pos) <= rng2
-                    and off <= 2.0
-                    and enemy.invulnerable_until_tick <= T
-                    and line_of_sight(bot.pos, enemy.pos)
-                )
-            ba.special_action = SpecialAction.Battle(fire=fire)
+            elif tag == HEALER:
+                ba.special_action = SpecialAction.Healer(fire=False, target=0)
+            else:
+                enemy = min(enemies, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
+                if enemy is not None:
+                    ba.turn_action = turn_towards(enemy.pos)
+                ba.special_action = SpecialAction.Battle(fire=False)
         return act
 
 

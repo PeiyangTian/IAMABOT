@@ -55,8 +55,6 @@ except Exception:  # pragma: no cover - defensive, the starterpack always has th
 
 
 DEBUG = bool(os.environ.get("IAMABOT_DEBUG"))
-# Per-match counters for the regression harness (tools/arena); off in tournament play.
-STATS = bool(os.environ.get("IAMABOT_STATS"))
 
 BATTLE = 0
 HEALER = 1
@@ -181,12 +179,6 @@ class AdvancedStrategy:
     STEAL = _env("IAMABOT_STEAL", 0)
     RACE_LEASH = _env("IAMABOT_RACE_LEASH", 10.0)
     RACE_ABORT = _env("IAMABOT_RACE_ABORT", 0.8)
-    PUSH_MODE = _env("IAMABOT_PUSH", 1)
-    PUSH_NEAR = _env("IAMABOT_PUSH_NEAR", 12.0)
-    PUSH_LEASH = _env("IAMABOT_PUSH_LEASH", 11.0)
-    PUSH_HOME_R = _env("IAMABOT_PUSH_HOME_R", 11.0)
-    PUSH_ENTER = _env("IAMABOT_PUSH_ENTER", 120)
-    PUSH_EXIT = _env("IAMABOT_PUSH_EXIT", 60)
     SIDESTEP_STALL = _env("IAMABOT_SIDESTEP_STALL", 300)
     PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
     STALL_TICKS = _env("IAMABOT_STALL", 250)
@@ -221,18 +213,9 @@ class AdvancedStrategy:
         self.home_phase = "gather"
         self.home_since = 0
         self.retreating: set = set()
-        self.push = False
-        self.push_count = 0
         self.stealing = False
         self.debug_next = 0
         self.why: dict = {}
-        self.exc_count = 0
-        self.stats = {
-            "ticks": 0, "shots": 0, "ready_idle": 0, "blocked_payload": 0, "blocked_wall": 0,
-            "heal_try": 0, "heal_ok": 0, "retreat_enter": 0, "flank_enter": 0,
-            "race_ticks": 0, "defend_ticks": 0, "steal_ticks": 0,
-            "min_bank": 10**9, "fallbacks": 0, "exceptions": 0,
-        }
 
     # ================================================================== setup
 
@@ -393,44 +376,16 @@ class AdvancedStrategy:
         try:
             if not self.init_done:
                 self._setup(state)
-            act = self._tick(state)
-            if STATS:
-                self._stat_tick(state)
-            return act
-        except Exception as exc:  # never let a bug take the whole fleet out of the match
-            self.exc_count += 1
-            self.stats["exceptions"] += 1
-            if self.exc_count <= 3 or self.exc_count % 500 == 0:
-                import sys
+            return self._tick(state)
+        except Exception:  # never let a bug take the whole fleet out of the match
+            if DEBUG:
                 import traceback
 
-                print(
-                    f"[iamabot] {type(exc).__name__} at tick {getattr(state, 'tick', '?')} "
-                    f"(#{self.exc_count}): {exc}",
-                    file=sys.stderr,
-                )
-                if DEBUG:
-                    traceback.print_exc()
+                traceback.print_exc()
             try:
-                self.stats["fallbacks"] += 1
                 return self._fallback(state)
             except Exception:
                 return FleetAction.new()
-
-    def _stat_tick(self, state: GameState) -> None:
-        st = self.stats
-        st["ticks"] += 1
-        st["min_bank"] = min(st["min_bank"], get_budget().remaining)
-        if self.home == "race":
-            st["race_ticks"] += 1
-        elif self.home == "defend":
-            st["defend_ticks"] += 1
-        if self.stealing:
-            st["steal_ticks"] += 1
-        if state.tick % 250 == 0 or state.tick >= self.MAX_T - 1:
-            import json as _json
-
-            print("[stats] " + _json.dumps(st), flush=True)
 
     # ================================================================ the tick
 
@@ -888,8 +843,6 @@ class AdvancedStrategy:
         if not front:
             return
         fighters = self.op_fighters
-        if self.PUSH_MODE:
-            fighters = self._push_filter(front, fighters)
         if self.LEASH > 0:
             # Payload-centred army (what noeyedeer and JaniceKeepTalking do): only chase
             # enemies near the payload.  Raiders parked on our deposit are ignored and the
@@ -966,7 +919,6 @@ class AdvancedStrategy:
                     self.retreating.discard(b.id)
                 elif b.id not in self.retreating and b.hp <= self.RETREAT_HP and d2 <= under_fire2:
                     self.retreating.add(b.id)
-                    self.stats["retreat_enter"] += 1
                 if b.id in self.retreating:
                     if d2 < safe2:
                         ax, ay = self._away(b.x, b.y, fighters)
@@ -1025,53 +977,6 @@ class AdvancedStrategy:
                 moves[b.id] = (-ly / n * sgn * 0.8, lx / n * sgn * 0.8)
             else:
                 moves[b.id] = (0.0, 0.0)
-
-    def _push_filter(self, front, fighters) -> list:
-        """Push mode.  When the enemy's main force sits far from the payload (turtling on
-        its own deposit like DIBSFA in match 376, or raiding ours like Gang), chasing the
-        nearest enemy drags the army away and the circle stays empty.  Then only enemies
-        near the payload are pressed and everyone else takes the circle and pushes.  Leave
-        as soon as a real force comes back to the payload.  Both switches need the
-        condition to hold for a while (hysteresis)."""
-        px, py = self.P
-        near_r2 = self.PUSH_NEAR ** 2
-        op_near = sum(
-            self._power(e) for e in fighters if (e.px - px) ** 2 + (e.py - py) ** 2 <= near_r2
-        )
-        my_near = sum(
-            self._power(u)
-            for u in self.me
-            if u.cls != EXTRACTOR and (u.x - px) ** 2 + (u.y - py) ** 2 <= near_r2
-        )
-        op_all = self.op_all
-        # Only a passive enemy: its main force sitting on ITS OWN deposit.  A raid on ours
-        # is a different situation (the baseline answer beats it) and must not trigger.
-        hx, hy = self.dep_other
-        home_r2 = self.PUSH_HOME_R ** 2
-        op_home = sum(
-            self._power(e) for e in fighters if (e.px - hx) ** 2 + (e.py - hy) ** 2 <= home_r2
-        )
-        if not self.push:
-            want = (
-                self.T > 800
-                and op_all > 1.0
-                and op_home >= 0.5 * op_all
-                and op_near <= 0.6 * self.my_all
-            )
-            self.push_count = self.push_count + 1 if want else 0
-            if self.push_count >= self.PUSH_ENTER:
-                self.push, self.push_count = True, 0
-                self.stats["push_enter"] = self.stats.get("push_enter", 0) + 1
-        else:
-            leave = op_near >= 0.8 * max(my_near, 1.0) or op_home < 0.3 * op_all
-            self.push_count = self.push_count + 1 if leave else 0
-            if self.push_count >= self.PUSH_EXIT:
-                self.push, self.push_count = False, 0
-        if not self.push:
-            return fighters
-        self.stats["push_ticks"] = self.stats.get("push_ticks", 0) + 1
-        L2 = self.PUSH_LEASH ** 2
-        return [e for e in fighters if (e.px - px) ** 2 + (e.py - py) ** 2 <= L2]
 
     def _anchor_duty(self, front, moves) -> list:
         """Send two battle bots into the capture circle; return the rest."""
@@ -1559,9 +1464,6 @@ class AdvancedStrategy:
                 and self._los(ox, oy, ex, ey)
             )
             out[h.id] = (a.id, want, ok)
-            if STATS:
-                self.stats["heal_try"] += 1
-                self.stats["heal_ok"] += 1 if ok else 0
         return out
 
     def _away(self, x, y, enemies):
@@ -1739,20 +1641,6 @@ class AdvancedStrategy:
             for v in victims:
                 claimed.add(v)
             out[b.id] = (want, True)
-        if STATS:
-            fired = {bid for bid, (_, go) in out.items() if go}
-            for b, ox, oy, want, after in ready:
-                if b.id in fired:
-                    self.stats["shots"] += 1
-                    continue
-                self.stats["ready_idle"] += 1
-                e = self.op_by_id.get(self.aim.get(b.id, -1))
-                if e is None:
-                    continue
-                if self._payload_blocks(ox, oy, e.px, e.py):
-                    self.stats["blocked_payload"] += 1
-                elif not self._los(ox, oy, e.px, e.py):
-                    self.stats["blocked_wall"] += 1
         return out
 
     def _why_not(self, b, ox, oy, after, op) -> None:
@@ -1849,55 +1737,31 @@ class AdvancedStrategy:
     # ================================================================ fallback
 
     def _fallback(self, state: GameState) -> FleetAction:
-        """Minimal but live controller used only if the main one raises: battle bots walk to
-        the payload, face the nearest enemy and fire when roughly on target with a line of
-        sight; healers heal the nearest wounded ally in reach; extractors mine."""
         act = FleetAction.new()
         conf = get_config()
-        T = state.tick
         act.fabricator_next = BATTLE
         act.rush_order = (
-            T < conf.max_ticks - conf.endgame_ticks
+            state.tick < conf.max_ticks - conf.endgame_ticks
             and not state.fleet_me.is_full()
             and state.fabricator_me.tokens >= conf.fabricator.rush_cost
         )
         payload = state.payload_pos()
         enemies = list(state.fleet_other)
-        allies = list(state.fleet_me)
-        rng2 = conf.bot.blaster_range ** 2
-        for bot in allies:
+        for bot in state.fleet_me:
             ba = act.bots[bot.id]
             tag = bot.special.tag
+            ba.move_action = move_bot(navigate_to(bot.pos, payload))
             if tag == EXTRACTOR:
                 ba.turn_action = turn_towards(state.deposit_me.pos)
                 ba.special_action = SpecialAction.Extractor(mine=True)
                 ba.move_action = move_bot(navigate_to(bot.pos, state.deposit_me.pos))
-                continue
-            ba.move_action = move_bot(navigate_to(bot.pos, payload))
-            if tag == HEALER:
-                hurt = [a for a in allies if a.id != bot.id and a.health < conf.bot.health - 0.1]
-                a = min(hurt, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
-                if a is None:
-                    ba.special_action = SpecialAction.Healer(fire=False, target=0)
-                    continue
-                ba.turn_action = turn_towards(a.pos)
-                off = abs(diff_degrees((a.pos - bot.pos).angle_deg(), bot.angle))
-                ok = bot.pos.dist(a.pos) <= conf.bot.base_heal_range - 0.1 and off <= 40.0
-                ba.special_action = SpecialAction.Healer(fire=ok, target=a.id)
-                continue
-            enemy = min(enemies, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
-            fire = False
-            if enemy is not None:
-                ba.turn_action = turn_towards(enemy.pos)
-                off = abs(diff_degrees((enemy.pos - bot.pos).angle_deg(), bot.angle))
-                fire = (
-                    bot.next_fire_tick <= T
-                    and bot.pos.dist_sq(enemy.pos) <= rng2
-                    and off <= 2.0
-                    and enemy.invulnerable_until_tick <= T
-                    and line_of_sight(bot.pos, enemy.pos)
-                )
-            ba.special_action = SpecialAction.Battle(fire=fire)
+            elif tag == HEALER:
+                ba.special_action = SpecialAction.Healer(fire=False, target=0)
+            else:
+                enemy = min(enemies, key=lambda o: bot.pos.dist_sq(o.pos), default=None)
+                if enemy is not None:
+                    ba.turn_action = turn_towards(enemy.pos)
+                ba.special_action = SpecialAction.Battle(fire=False)
         return act
 
 
