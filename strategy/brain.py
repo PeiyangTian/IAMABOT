@@ -25,9 +25,12 @@ The design follows the engine source rather than the prose rules:
 * From the endgame on, if the payload sits on our half, every gun goes for the bodies
   holding the circle at close range and two bots walk in to push it back: sitting still
   there is a certain tiebreak loss.
+* Badly hurt battle bots (4 hp or less, one hit from dying) back out of reach while still
+  shooting (facing is independent of movement) and return once healed to 8; with a clear
+  local edge (1.5x) the stand-off distance closes from 9.3 to 7.5 to finish the fight.
 * Several adaptive responses (all-in home raid answer, counter-economy raid, zone-aware
-  distance, payload sidestep) are implemented but off by default: in a 666-game evaluation
-  matrix each of them cost more games than it won.
+  distance, payload sidestep, strafing, payload leash) are implemented but off by default:
+  in the evaluation matrices each of them cost more games than it won.
 
 All hot loops use plain floats; engine helpers are called through the raw C entry points
 to avoid building ``Vec2`` objects in the inner loops.
@@ -165,6 +168,14 @@ class AdvancedStrategy:
     ZONE_MARGIN = _env("IAMABOT_ZONE_MARGIN", -3.0)
     LATE_TICKS = _env("IAMABOT_LATE", 3000)
     SIDESTEP = _env("IAMABOT_SIDESTEP", 0)
+    RETREAT_HP = _env("IAMABOT_RETREAT_HP", 4.0)
+    RETURN_HP = _env("IAMABOT_RETURN_HP", 8.0)
+    STRAFE = _env("IAMABOT_STRAFE", 0)
+    DYN_RANGE = _env("IAMABOT_DYN_RANGE", 1)
+    DYN_EDGE = _env("IAMABOT_DYN_EDGE", 1.5)
+    D_CLOSE = _env("IAMABOT_D_CLOSE", 7.5)
+    LEASH = _env("IAMABOT_LEASH", 0.0)
+    GUARDS = _env("IAMABOT_GUARDS", 1)
     SIDESTEP_STALL = _env("IAMABOT_SIDESTEP_STALL", 300)
     PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
     STALL_TICKS = _env("IAMABOT_STALL", 250)
@@ -198,6 +209,7 @@ class AdvancedStrategy:
         self.home_ids: set = set()
         self.home_phase = "gather"
         self.home_since = 0
+        self.retreating: set = set()
         self.debug_next = 0
         self.why: dict = {}
 
@@ -395,8 +407,11 @@ class AdvancedStrategy:
             # no trickle of guards, and the miners run.
             guards = {}
             self.raid = self.home_raid
-        else:
+        elif self.GUARDS:
             guards = self._pick_guards(battles, op)
+        else:
+            guards = {}
+            self._pick_guards([], op)  # still flags the raid so the miners run
         self.n_guards = len(guards)
         raid = self._pick_raiders(battles, guards)
         moves.update(raid)
@@ -791,6 +806,13 @@ class AdvancedStrategy:
         if not front:
             return
         fighters = self.op_fighters
+        if self.LEASH > 0:
+            # Payload-centred army (what noeyedeer and JaniceKeepTalking do): only chase
+            # enemies near the payload.  Raiders parked on our deposit are ignored and the
+            # army keeps pushing; with nobody near the payload it takes the circle.
+            px0, py0 = self.P
+            L2 = self.LEASH ** 2
+            fighters = [e for e in fighters if (e.px - px0) ** 2 + (e.py - py0) ** 2 <= L2]
         if self.home == "race":
             # Leave the raiders on our deposit; they are not worth a corridor fight.
             fighters = [e for e in fighters if e.id not in self.home_ids]
@@ -832,10 +854,30 @@ class AdvancedStrategy:
         sidestep_ok = self.SIDESTEP and self.T - self.capture_moved > self.SIDESTEP_STALL
         zone2 = (self.CAP_R + self.ZONE_MARGIN) ** 2
         Dn2 = self.D_NEAR ** 2
+        # Dynamic range: with a clear local edge, close in to finish the fight faster.
+        if self.DYN_RANGE and self.my_near >= self.DYN_EDGE * self.op_near + 1.0:
+            D2 = self.D_CLOSE ** 2
+        under_fire2 = (self.RANGE + 1.5) ** 2
+        safe2 = (self.RANGE + 2.5) ** 2
         for b in front:
             ranked = sorted(fighters, key=lambda o: (o.px - b.x) ** 2 + (o.py - b.y) ** 2)
             e = ranked[0]
             d2 = (e.px - b.x) ** 2 + (e.py - b.y) ** 2
+            if self.RETREAT_HP > 0:
+                # Rotate the badly hurt out of reach: facing is independent of movement, so
+                # a retreating bot keeps shooting back while the healers top it up, and the
+                # enemy is denied the kill.
+                if b.id in self.retreating and b.hp >= self.RETURN_HP:
+                    self.retreating.discard(b.id)
+                elif b.id not in self.retreating and b.hp <= self.RETREAT_HP and d2 <= under_fire2:
+                    self.retreating.add(b.id)
+                if b.id in self.retreating:
+                    if d2 < safe2:
+                        ax, ay = self._away(b.x, b.y, fighters)
+                        moves[b.id] = self._nav(b.x, b.y, b.x + ax * 3.0, b.y + ay * 3.0)
+                    else:
+                        moves[b.id] = (0.0, 0.0)
+                    continue
             # Stand off at long range against an army in the open (it has to walk into our
             # fire), but close in on bodies sitting on the payload: from far away the
             # payload shields them, and they win the tiebreak by just sitting there.
@@ -878,7 +920,15 @@ class AdvancedStrategy:
                 if not clear:
                     moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
                     continue
-            moves[b.id] = (0.0, 0.0)
+            if self.STRAFE:
+                # Side-step across the enemy's line of fire, flipping direction every few
+                # ticks.  (Experimental: hitscan with a 0.25 hull barely cares.)
+                lx, ly = e.px - b.x, e.py - b.y
+                n = math.hypot(lx, ly) or 1.0
+                sgn = 1.0 if ((self.T // self.STRAFE) + b.id) % 2 else -1.0
+                moves[b.id] = (-ly / n * sgn * 0.8, lx / n * sgn * 0.8)
+            else:
+                moves[b.id] = (0.0, 0.0)
 
     def _anchor_duty(self, front, moves) -> list:
         """Send two battle bots into the capture circle; return the rest."""

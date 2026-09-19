@@ -1,6 +1,6 @@
 # IAMABOT strategy
 
-中文完整说明见 [`STRATEGY_v7.md`](STRATEGY_v7.md)（Chinese write-up of the current strategy; `STRATEGY_v6.1.md` is the previous version).
+中文完整说明见 [`STRATEGY_v8.md`](STRATEGY_v8.md)（Chinese write-up of the current strategy; `STRATEGY_v7.md` and `STRATEGY_v6.1.md` are earlier versions).
 
 `main.py` always selects `AdvancedStrategy` (in `brain.py`) in a tournament match. The
 controller is stateful and side agnostic because the engine mirrors the map for team B.
@@ -21,7 +21,9 @@ The rules below come from the engine source (`mm-engine`), not only the wiki pro
   payload, which is solid and eats shots along the corridor.
 - **Positioning (press).** When enemy fighters exist, every battle bot closes on its
   nearest one and stands to shoot just inside blaster range (9.3 of 10), so all guns engage
-  at once, converge on the enemy's nearest bodies, and the enemy must walk into our fire. Bots stay one splash diameter apart and off solid
+  at once, converge on the enemy's nearest bodies, and the enemy must walk into our fire.
+  With a clear local edge (1.5x) the distance closes to 7.5 to finish the fight; bots at
+  4 hp or less back out of reach while still shooting and return once healed to 8. Bots stay one splash diameter apart and off solid
   hulls (a shot into the payload or a deposit splashes bots hugging it). With no enemy
   fighter around, the army takes the capture circle and pushes. Head to head, pressing beat
   every firing-position planner we tried, including our own v5.
