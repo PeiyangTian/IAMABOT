@@ -1,0 +1,19 @@
+[dependencies]
+inventory = "0.3"
+
+[dependencies.mm-engine]
+default-features = false
+features = [
+    "client",
+    "ffi",
+]
+path = "../.mm/cache/github.com-mechmania-engine-879578d448251d0acc7f10eef3d7fe5450758096"
+
+[lib]
+crate-type = ["cdylib"]
+name = "mm_python_native"
+
+[package]
+edition = "2021"
+name = "mm-python-native"
+version = "0.1.0"
