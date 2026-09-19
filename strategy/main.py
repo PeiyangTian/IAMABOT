@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from . import *
-from .brain import AdvancedStrategy, ReferenceStrategy
+from .brain import AdvancedStrategy, ReferenceStrategy, SuperStrategy
 
 
 def get_strategy(team: int) -> Strategy:
@@ -21,10 +21,10 @@ def get_strategy(team: int) -> Strategy:
 
     if team == 0:
         print("Hello! I am team A (on the bottom left)")
-        return basic_strategy
+        return AdvancedStrategy()
     else:
         print("Hello! I am team B (on the top right)")
-        return do_nothing
+        return SuperStrategy()
 
     # NOTE when actually submitting your bot, you probably want to have the SAME strategy
     # for both sides: the engine mirrors the world for the top-right team, so there is
