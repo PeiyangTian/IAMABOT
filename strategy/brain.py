@@ -176,6 +176,9 @@ class AdvancedStrategy:
     D_CLOSE = _env("IAMABOT_D_CLOSE", 7.5)
     LEASH = _env("IAMABOT_LEASH", 0.0)
     GUARDS = _env("IAMABOT_GUARDS", 1)
+    STEAL = _env("IAMABOT_STEAL", 0)
+    RACE_LEASH = _env("IAMABOT_RACE_LEASH", 10.0)
+    RACE_ABORT = _env("IAMABOT_RACE_ABORT", 0.8)
     SIDESTEP_STALL = _env("IAMABOT_SIDESTEP_STALL", 300)
     PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
     STALL_TICKS = _env("IAMABOT_STALL", 250)
@@ -210,6 +213,7 @@ class AdvancedStrategy:
         self.home_phase = "gather"
         self.home_since = 0
         self.retreating: set = set()
+        self.stealing = False
         self.debug_next = 0
         self.why: dict = {}
 
@@ -278,6 +282,7 @@ class AdvancedStrategy:
         self.grid = fine
         self.coarse = [(x, y) for (x, y) in fine if (x * 2) % 2 == 1 and (y * 2) % 2 == 1]
         self.mine_slots = self._make_mine_slots()
+        self.steal_slots = self._slots_around(self.dep_other)
         self.init_done = True
 
     # ============================================================ engine calls
@@ -317,6 +322,26 @@ class AdvancedStrategy:
         return _seg_dist2(px, py, ax, ay, bx, by) < self.P_BLOCK2
 
     # ================================================================ geometry
+
+    def _slots_around(self, dep) -> list:
+        """Spread mining spots with a clear ray to `dep` (used for the enemy deposit)."""
+        dx0, dy0 = dep
+        reach = self.EXTRACT_R + self.DEP_R - 0.35
+        min_r = self.DEP_R + self.HULL_SAFE
+        cand = []
+        for (x, y) in self.grid:
+            r = math.hypot(x - dx0, y - dy0)
+            if r < min_r or r > reach or not self._los(x, y, dx0, dy0):
+                continue
+            cand.append((-abs(r - 2.5), x, y))
+        cand.sort(reverse=True)
+        chosen: list = []
+        for _, x, y in cand:
+            if all((x - a) ** 2 + (y - b) ** 2 >= self.SPACING ** 2 for a, b in chosen):
+                chosen.append((x, y))
+            if len(chosen) >= 10:
+                break
+        return chosen
 
     def _make_mine_slots(self) -> list:
         dx0, dy0 = self.dep
@@ -402,6 +427,18 @@ class AdvancedStrategy:
         # ---- movement ----------------------------------------------------------
         moves: dict[int, tuple] = {}
         self._home_state()
+        ex, ey = self.dep_other
+        self.stealing = bool(
+            self.STEAL
+            and self.home is not None
+            and not any(
+                (e.x - ex) ** 2 + (e.y - ey) ** 2 < 9.0 ** 2 for e in self.op if e.cls == BATTLE
+            )
+        )
+        if self.HOME_MODE == "steal":
+            # Economy-only answer: the miners take the enemy's empty deposit, the army
+            # plays exactly as without the raid.
+            self.home = None
         if self.home:
             # All-in raid on our deposit: the whole army answers it (or races the payload);
             # no trickle of guards, and the miners run.
@@ -463,7 +500,7 @@ class AdvancedStrategy:
                 f"[dbg] t={T} stance={self.stance} cap={state.capture:+.3f} "
                 f"near={self.my_near:.1f}v{self.op_near:.1f} all={self.my_all:.1f}v{self.op_all:.1f} "
                 f"B/H/E={len(battles)}/{len(healers)}/{len(extractors)} op={len(op)} "
-                f"zone={len(self.me_in_zone)}v{len(self.op_in_zone)} guards={self.n_guards} raid={len(self.raiders)} home={self.home}/{self.home_phase} "
+                f"zone={len(self.me_in_zone)}v{len(self.op_in_zone)} guards={self.n_guards} raid={len(self.raiders)} home={self.home}/{self.home_phase} steal={self.stealing} "
                 f"AC=({self.AC[0]:.0f},{self.AC[1]:.0f}) "
                 f"tok={state.fabricator_me.tokens:.0f} bank={b.remaining} last={b.last_charge} "
                 f"why={self.why}",
@@ -636,12 +673,12 @@ class AdvancedStrategy:
         if self.home is None:
             if R >= 2.5 and R >= 0.5 * self.op_all:
                 self.home = "defend" if M >= self.HOME_EDGE * R + 1.0 else "race"
-                if self.HOME_MODE in ("defend", "race"):
-                    self.home = self.HOME_MODE
+                if self.HOME_MODE in ("defend", "race", "steal"):
+                    self.home = "race" if self.HOME_MODE == "steal" else self.HOME_MODE
                 self.home_phase = "gather"
                 self.home_since = self.T
             return
-        if self.HOME_MODE in ("defend", "race"):
+        if self.HOME_MODE in ("defend", "race", "steal"):
             return
         if self.home == "race" and M >= (self.HOME_EDGE + 0.2) * R + 1.0:
             self.home = "defend"
@@ -814,8 +851,19 @@ class AdvancedStrategy:
             L2 = self.LEASH ** 2
             fighters = [e for e in fighters if (e.px - px0) ** 2 + (e.py - py0) ** 2 <= L2]
         if self.home == "race":
-            # Leave the raiders on our deposit; they are not worth a corridor fight.
-            fighters = [e for e in fighters if e.id not in self.home_ids]
+            # Leave the raiders on our deposit; they are not worth a corridor fight.  The
+            # army escorts the payload: it fights only what comes near it and otherwise
+            # sits in the circle pushing (noeyedeer's answer to Gang, match 260).
+            px0, py0 = self.P
+            L2 = self.RACE_LEASH ** 2
+            others = [e for e in fighters if e.id not in self.home_ids]
+            near = [e for e in others if (e.px - px0) ** 2 + (e.py - py0) ** 2 <= L2]
+            # Safety valve: if a real army gathers around the payload (the raiders coming
+            # back, or reinforcements near their spawn), stop racing and fight it properly.
+            if sum(self._power(e) for e in near) >= self.RACE_ABORT * max(self.my_near, 1.0):
+                fighters = others
+            else:
+                fighters = near
         elif self.home == "defend":
             if self._home_gather(front, moves):
                 return
@@ -1228,6 +1276,23 @@ class AdvancedStrategy:
         used = set(self.mine_slot.values())
         raiders = [e for e in self.raid if e.cls == BATTLE]
         guarded = self.n_guards > 0
+        if self.stealing and self.steal_slots:
+            # The enemy army sits on our deposit, so theirs is empty: mine it instead.
+            ex, ey = self.dep_other
+            taken: set = set()
+            for u in sorted(extractors, key=lambda e: e.id):
+                k = min(
+                    (i for i in range(len(self.steal_slots)) if i not in taken),
+                    key=lambda i: (self.steal_slots[i][0] - u.x) ** 2 + (self.steal_slots[i][1] - u.y) ** 2,
+                    default=u.id % len(self.steal_slots),
+                )
+                taken.add(k)
+                tx, ty = self.steal_slots[k]
+                mx, my = self._nav(u.x, u.y, tx, ty)
+                moves[u.id] = (mx, my)
+                ox, oy = u.x + mx * self.SPEED, u.y + my * self.SPEED
+                out[u.id] = (_ang(ex - ox, ey - oy), True)
+            return out
         for u in sorted(extractors, key=lambda e: e.id):
             if raiders and not guarded:
                 close = [e for e in raiders if (e.x - u.x) ** 2 + (e.y - u.y) ** 2 < 10.5 ** 2]
