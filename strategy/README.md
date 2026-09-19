@@ -1,5 +1,7 @@
 # IAMABOT strategy
 
+中文完整说明见 [`STRATEGY_v6.1.md`](STRATEGY_v6.1.md)（Chinese write-up of the current strategy).
+
 `main.py` always selects `AdvancedStrategy` (in `brain.py`) in a tournament match. The
 controller is stateful and side agnostic because the engine mirrors the map for team B.
 
