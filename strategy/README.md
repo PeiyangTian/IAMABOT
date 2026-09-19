@@ -1,6 +1,6 @@
 # IAMABOT strategy
 
-中文完整说明见 [`STRATEGY_v8.md`](STRATEGY_v8.md)（Chinese write-up of the current strategy; `STRATEGY_v7.md` and `STRATEGY_v6.1.md` are earlier versions).
+中文完整说明见 [`STRATEGY_v9.md`](STRATEGY_v9.md)（Chinese write-up of the current strategy; `STRATEGY_v8.md`, `STRATEGY_v7.md` and `STRATEGY_v6.1.md` are earlier versions). Regression matches: [`tools/arena`](../tools/arena/README.md).
 
 `main.py` always selects `AdvancedStrategy` (in `brain.py`) in a tournament match. The
 controller is stateful and side agnostic because the engine mirrors the map for team B.
@@ -27,6 +27,10 @@ The rules below come from the engine source (`mm-engine`), not only the wiki pro
   hulls (a shot into the payload or a deposit splashes bots hugging it). With no enemy
   fighter around, the army takes the capture circle and pushes. Head to head, pressing beat
   every firing-position planner we tried, including our own v5.
+- **Deposit campers.** When half or more of the enemy's fighting power sits within 11 of our
+  deposit and we are clearly stronger around the payload (sustained 120 ticks), the army
+  stops chasing them and fights only within 11 of the payload, pushing it; it resumes normal
+  play once the payload fight evens up (60-tick exit hysteresis).
 - **Healers.** Healers are paired with patients globally, preferring heals that can land
   this tick, stand behind the patient relative to the enemy, and fire only after the final
   move is known (range, arc and line of sight are checked on the post-move pose).
