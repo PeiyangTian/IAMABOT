@@ -1,0 +1,19 @@
+[tool.pyright]
+pythonPath = "python"
+
+[tool.pylint.messages_control]
+disable = [
+    "missing-docstring",
+    "missing-module-docstring", 
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "invalid-name",
+    "too-few-public-methods",
+    "line-too-long",
+    "unused-argument",
+    "broad-except",
+    "consider-using-enumerate"
+]
+
+[tool.pylint.MASTER]
+init-hook = "import sys; sys.path.append('.')"
