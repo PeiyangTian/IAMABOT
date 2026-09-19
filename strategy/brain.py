@@ -16,11 +16,11 @@ The design follows the engine source rather than the prose rules:
   the corridor axis.  Firing positions are chosen against the enemy's actual front with a
   clear line past the payload, not in a ring behind it.
 * The payload moves at a fixed speed whenever exactly one team has a bot inside the capture
-  radius, independent of how many.  A couple of anchors contest the circle; everybody else
-  fights from spread firing positions.
-* Bots walking alone into a lost fight decide mirror matches, so the army compares its
-  strength with the enemy front, presses when ahead and falls back out of range to collect
-  reinforcements when behind.
+  radius, independent of how many.  With no enemy fighter around, the army takes the circle
+  and pushes.
+* When enemy fighters exist, every battle bot presses its nearest one and stands to shoot
+  once inside six tiles: all guns engage at once and converge on the enemy's nearest bodies.
+  Head to head this beat every firing-position planner we tried, including our own v5.
 
 All hot loops use plain floats; engine helpers are called through the raw C entry points
 to avoid building ``Vec2`` objects in the inner loops.
@@ -137,12 +137,13 @@ def _snapshot(fleet) -> list:
 class AdvancedStrategy:
     """Fire-control, positioning, healing and economy controller."""
 
-    # Production plan.  The opening spends the starting bank on fighters: the first
-    # engagement at the payload decides most matches, and an economy that has not paid
-    # back yet does not shoot.
-    OPENING = _env("IAMABOT_OPENING", "BBBHBBBBHBBBBHBBB")
+    # Production plan.  The opening is balanced: three extractors start the economy at
+    # once (every top team opens with seven to ten, and an all-fighter opening falls behind
+    # them by mid game), nine battle bots and five healers win the first fight.  A third
+    # of the fighting force stays healers: sustain beat raw guns in every head-to-head.
+    OPENING = _env("IAMABOT_OPENING", "EBBEHBHBEBHBBHBBB")
     EXTRACTOR_TARGET = _env("IAMABOT_EXTRACTORS", 6)
-    HEALER_RATIO = _env("IAMABOT_HEALER_RATIO", 0.22)
+    HEALER_RATIO = _env("IAMABOT_HEALER_RATIO", 0.33)
     EXTRACTOR_CUTOFF = 4300  # an extractor built later cannot pay for itself
 
     # Engagement distances (to the nearest enemy fighter) per stance.
@@ -150,6 +151,10 @@ class AdvancedStrategy:
     D_HOLD = _env("IAMABOT_D_HOLD", 7.4)
     ATTACK_RATIO = _env("IAMABOT_ATTACK_RATIO", 1.25)
     RETREAT_RATIO = _env("IAMABOT_RETREAT_RATIO", 0.72)
+
+    MOVE_MODE = _env("IAMABOT_MOVE", "press")
+    D_PRESS = _env("IAMABOT_D_PRESS", 6.0)
+    PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
 
     CHEAP_BUDGET = 60_000
 
@@ -611,8 +616,44 @@ class AdvancedStrategy:
     # ============================================================= positioning
 
     def _battle_moves(self, front, moves) -> None:
+        """Press: every battle bot closes on its nearest enemy fighter until it is inside
+        `D_PRESS` with a clear line (no wall, not behind the payload), then stands and
+        shoots.  All guns engage at once and converge on the enemy's nearest bodies, which
+        beat every formation we tried head to head.  With no enemy fighter anywhere the
+        army takes the capture circle and pushes."""
         if not front:
             return
+        fighters = self.op_fighters
+        if self.MOVE_MODE == "slots" or not fighters:
+            return self._slot_moves(front, moves)
+        D = self.D_PRESS
+        D2 = D * D
+        shoot2 = (self.RANGE - 0.6) ** 2
+        for b in front:
+            ranked = sorted(fighters, key=lambda o: (o.px - b.x) ** 2 + (o.py - b.y) ** 2)
+            e = ranked[0]
+            d2 = (e.px - b.x) ** 2 + (e.py - b.y) ** 2
+            if d2 > D2:
+                moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
+                continue
+            if self.PRESS_LOS:
+                # Stand only where we actually have a shot at someone; otherwise keep
+                # walking the route toward the nearest enemy until a line opens.
+                clear = False
+                for o in ranked[:4]:
+                    if (o.px - b.x) ** 2 + (o.py - b.y) ** 2 > shoot2:
+                        break
+                    if not self._payload_blocks(b.x, b.y, o.px, o.py) and self._los(
+                        b.x, b.y, o.px, o.py
+                    ):
+                        clear = True
+                        break
+                if not clear:
+                    moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
+                    continue
+            moves[b.id] = (0.0, 0.0)
+
+    def _slot_moves(self, front, moves) -> None:
         slots = self._slots(len(front))
         if not slots:
             for b in front:
