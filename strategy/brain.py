@@ -155,6 +155,7 @@ class AdvancedStrategy:
     MOVE_MODE = _env("IAMABOT_MOVE", "press")
     D_PRESS = _env("IAMABOT_D_PRESS", 6.0)
     PRESS_LOS = _env("IAMABOT_PRESS_LOS", 0)
+    STALL_TICKS = _env("IAMABOT_STALL", 250)
 
     CHEAP_BUDGET = 60_000
 
@@ -171,6 +172,8 @@ class AdvancedStrategy:
         self.stance_since = 0
         self.raid: list = []
         self.n_guards = 0
+        self.capture_moved = 0
+        self.last_capture = 0.0
         self.debug_next = 0
         self.why: dict = {}
 
@@ -337,6 +340,9 @@ class AdvancedStrategy:
         self.me = me
         self.op = op
         self.op_by_id = {e.id: e for e in op}
+        if abs(state.capture - self.last_capture) > 1e-6:
+            self.capture_moved = T
+            self.last_capture = state.capture
         self.capture = state.capture
         px, py = self._payload(state.capture)
         self.P = (px, py)
@@ -629,6 +635,16 @@ class AdvancedStrategy:
         D = self.D_PRESS
         D2 = D * D
         shoot2 = (self.RANGE - 0.6) ** 2
+        # Tiebreak insurance: armies parked on either side of a wall never shoot, and at
+        # max_ticks the payload's side decides.  If it sits on our half, unmoved, with no
+        # enemy in the circle, two bots walk in and push it back; ahead, nothing changes.
+        if (
+            self.capture <= 0.02
+            and self.T - self.capture_moved > self.STALL_TICKS
+            and self.T > 1500
+            and not self.op_in_zone
+        ):
+            front = self._anchor_duty(front, moves)
         for b in front:
             ranked = sorted(fighters, key=lambda o: (o.px - b.x) ** 2 + (o.py - b.y) ** 2)
             e = ranked[0]
@@ -652,6 +668,27 @@ class AdvancedStrategy:
                     moves[b.id] = self._nav(b.x, b.y, e.px, e.py)
                     continue
             moves[b.id] = (0.0, 0.0)
+
+    def _anchor_duty(self, front, moves) -> list:
+        """Send two battle bots into the capture circle; return the rest."""
+        if len(front) < 4:
+            return front
+        px, py = self.P
+        key = (round(px * 4), round(py * 4))
+        cache = self.__dict__.get("_anchor_cache")
+        if cache and cache[0] == key and self.T - cache[1] < 60:
+            spots = cache[2]
+        else:
+            spots = self._anchor_points(2, [])
+            self._anchor_cache = (key, self.T, spots)
+        if not spots:
+            return front
+        order = sorted(front, key=lambda b: (b.x - px) ** 2 + (b.y - py) ** 2)
+        chosen = order[: len(spots)]
+        for b, (tx, ty) in zip(chosen, spots):
+            moves[b.id] = self._nav(b.x, b.y, tx, ty)
+        ids = {b.id for b in chosen}
+        return [b for b in front if b.id not in ids]
 
     def _slot_moves(self, front, moves) -> None:
         slots = self._slots(len(front))
