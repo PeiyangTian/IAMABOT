@@ -15,6 +15,7 @@ ROSTER = {
     "v61": ("v61", "", {"history"}),
     "v7": ("v7", "", {"history"}),
     "v12": ("baseline_v12", "", {"history", "baseline"}),
+    "main": ("main_orig", "", {"history", "baseline"}),  # exact unmodified github.com/main
     # ------------------------------------------------------------------ rush
     "rushB": (V1, "OPP=advanced,IAMABOT_OPENING=BBBBBBBBBBBBBBBBB,IAMABOT_EXTRACTORS=0,IAMABOT_HEALER_RATIO=0", {"rush", "no_miners"}),
     "rushB5": (V5, "OPP=advanced,IAMABOT_OPENING=BBBBBBBBBBBBBBBBB,IAMABOT_EXTRACTORS=0,IAMABOT_HEALER_RATIO=0", {"rush", "no_miners"}),
@@ -63,6 +64,14 @@ ROSTER = {
     # ------------------------------------------------ distance variants
     "g3_d5": (V61, "OPP=advanced,IAMABOT_D_PRESS=5.0", {"distance"}),
     "g3_d7": (V61, "OPP=advanced,IAMABOT_D_PRESS=7.5", {"distance"}),
+    # --------------------------- v10: rebuilt from real server replays (api-mechmania) --
+    # These replace the guesswork the entries above were built on: build order, extractor
+    # target and healer ratio measured directly from downloaded NDJSON gamelogs of the
+    # CURRENT server version, not the wiki or old match writeups.  See STRATEGY_v10.md 3.
+    "gang_turtle26": (V61, "OPP=gang_turtle", {"turtle", "heal", "raid", "real:Gang", "2026"}),
+    "clanker26": (V61, "OPP=clanker_sustain", {"heal", "real:clankerbot", "2026"}),
+    "teamname26": (V61, "OPP=teamname_push", {"cover", "real:TeamName", "2026"}),
+    "potatoes26": (V61, "OPP=potatoes_econ", {"econ", "turtle", "real:Potatoes", "2026"}),
 }
 
 # The quick regression set: one or two per failure type, including every real-opponent
@@ -70,4 +79,5 @@ ROSTER = {
 QUICK = [
     "v12", "v7", "jkt", "jkt_cover", "gang7", "gangx", "noey", "clanker",
     "st24", "dibsfa8", "dibsfa_turtle", "stacker", "g3_heal45",
+    "gang_turtle26", "clanker26", "teamname26", "potatoes26",
 ]

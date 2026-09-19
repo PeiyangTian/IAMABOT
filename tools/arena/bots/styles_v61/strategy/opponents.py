@@ -418,3 +418,68 @@ class DibsfaTurtle(DibsfaConvert):
     def _pick_guards(self, battles, op):
         self.raid = []
         return {}
+
+
+# --------------------------------------------------------------------------------
+# v10 additions: replicas rebuilt from server replay downloads (api-mechmania), not
+# from the wiki writeups the v5/v6 replicas above were based on.  Real build orders,
+# extractor targets and healer ratios were measured directly from NDJSON gamelogs;
+# see strategy/STRATEGY_v10.md section 3 for the match IDs and the numbers below.
+
+
+class GangTurtle(DibsfaTurtle):
+    """Real Gang, current server version (matches #729 and #804, both losses for us):
+    NOT the deposit-raiding Gang the `Thief`-based classes above model.  Gang's build
+    has shifted to an 8-extractor economy opening and a heavy 30% healer ratio, holding
+    its own deposit until it is strong, then converting every extractor into a battle
+    bot in the last ticks before the production cutoff (measured: 8->0 extractors,
+    +6 battle, both games, exactly at T=6000) and throwing a tight blob at the payload.
+    We lost both measured games by getting ground down after that conversion: it left
+    Gang with more guns (22 battle bots vs our 18) and a tighter formation (stdev ~7
+    tiles vs our ~9) right when the fight that decides the match starts."""
+
+    OPENING = "EEEEEEEEBBBBBBHHH"
+    EXTRACTOR_TARGET = 8
+    HEALER_RATIO = 0.30
+    HOLD_UNTIL = int(__import__("os").environ.get("TURTLE_UNTIL", "6000"))
+
+
+class ClankerSustain(AdvancedStrategy):
+    """Real clankerbot, current server version (match #1247, a loss for us): a fixed,
+    low 3-extractor economy and a very high healer ratio (measured 11 healers to 18
+    battle bots by T=4500, ~35%).  It never turtles (its army spends ~99% of the game
+    in the mid-field, same as ours) -- it just fields more Battle+Healer bodies per
+    fleet slot than our 6-extractor build and out-sustains us: we were even or ahead on
+    HP through T=4000, then lost the entire fleet by T=6000 once its healer stack
+    caught up."""
+
+    OPENING = "EBBBBBHBEEHHBHBHB"
+    EXTRACTOR_TARGET = 3
+    HEALER_RATIO = 0.35
+
+
+class TeamNamePush(AdvancedStrategy):
+    """Real Team Name, current server version (match #1094, a loss for us): a balanced
+    opening with no big single-class block up front (battle, extractor and healer all
+    within the first four builds) and 6 extractors.  It does not grind us down --
+    match 1094 ended at T=2989 by the payload reaching our goal, not by elimination.
+    It simply won the capture-circle fight from the first real skirmish (~T=2000) and
+    never let go: our HP/count fell behind within one 500-tick window (T=2001..2501)
+    and the payload advanced on our goal almost every sampled tick after that."""
+
+    OPENING = "BEHEBBEBHBBBHBBBH"
+    EXTRACTOR_TARGET = 6
+    HEALER_RATIO = 0.28
+
+
+class PotatoesEcon(AdvancedStrategy):
+    """Real Potatoes, current server version (match #1234 vs DIBSFA): an 8-extractor
+    economy-turtle opening, close to DIBSFA's own, and it holds its own deposit ~85%
+    of the time rather than contesting the payload until its army is big.  Included for
+    completeness (the user asked us to study it) rather than as a fix target -- our
+    head-to-head record against the real team is 3-0 and this archetype is already
+    beaten badly by the current build (see STRATEGY_v10.md 3.2)."""
+
+    OPENING = "EEBEBBBEBEEEEHHBB"
+    EXTRACTOR_TARGET = 8
+    HEALER_RATIO = 0.25

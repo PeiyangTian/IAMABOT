@@ -1,6 +1,6 @@
 # IAMABOT strategy
 
-中文完整说明见 [`STRATEGY_v9.md`](STRATEGY_v9.md)（Chinese write-up of the current strategy; `STRATEGY_v8.md`, `STRATEGY_v7.md` and `STRATEGY_v6.1.md` are earlier versions). Regression matches: [`tools/arena`](../tools/arena/README.md).
+中文完整说明见 [`STRATEGY_v10.md`](STRATEGY_v10.md)（Chinese write-up of the current strategy, built from real server replay downloads of DIBSFA/Potatoes/Gang/JaniceKeepTalking/clankerbot/Team Name; `STRATEGY_v9.md`, `STRATEGY_v8.md`, `STRATEGY_v7.md` and `STRATEGY_v6.1.md` are earlier versions). Regression matches: [`tools/arena`](../tools/arena/README.md).
 
 `main.py` always selects `AdvancedStrategy` (in `brain.py`) in a tournament match. The
 controller is stateful and side agnostic because the engine mirrors the map for team B.
@@ -36,13 +36,19 @@ The rules below come from the engine source (`mm-engine`), not only the wiki pro
   move is known (range, arc and line of sight are checked on the post-move pose).
 - **Economy.** A balanced opening (3 extractors, 10 battle bots, 4 healers) starts the economy
   at once while still winning the first fight; the top teams open with 7-10 extractors and
-  an all-fighter opening falls behind them by mid game. Up to six extractors on spread slots
-  around our deposit, a third of the fighting force as healers. Deposit guards are only sent
+  an all-fighter opening falls behind them by mid game. Past the opening the steady state is
+  deliberately lean (up to four extractors, spread on slots around our deposit) with 36% of
+  the fighting force as healers: real server replays of Gang, clankerbot and JaniceKeepTalking
+  (see `STRATEGY_v10.md` 3) show they all run a small, fixed extractor count and 30-38%
+  healers, out-gunning a heavier-economy build slot for slot. Deposit guards are only sent
   in a size that can win locally; against a larger raid the extractors run instead.
-- **Endgame.** Tokens are worthless once production stops, so extractors become capture
-  bodies, and one bot hides to avoid losing to a fleet wipe. If the payload sits on our half
-  from the endgame on, every gun goes for the bodies holding the circle at close range and
-  two bots walk in to push it back.
+- **Endgame.** Tokens are worthless once production stops. In the last 80 ticks before the
+  cutoff, `_endgame_convert` stops building economy and, once the fleet is full, self-destructs
+  extractors one at a time and rushes battle bots into the freed slots — the same trick real
+  DIBSFA and Gang use (measured: extractors 8→0 at the exact tick production stops). One
+  extractor is always kept back as the hideout body. If the payload sits on our half from the
+  endgame on, every gun goes for the bodies holding the circle at close range and two bots
+  walk in to push it back.
 - **Compute.** Hot loops use plain floats and call the engine helpers through the raw C entry
   points; a typical tick costs ~0.5 ms, far under the per-tick refill.
 

@@ -151,20 +151,12 @@ class AdvancedStrategy:
 
     # Production plan.  The opening is balanced: three extractors start the economy at
     # once (every top team opens with seven to ten, and an all-fighter opening falls behind
-    # them by mid game), ten battle bots and four healers win the first fight.  Past the
-    # opening, the steady-state economy is deliberately lean (four extractors, down from
-    # six in v9) and healers run heavier (36%, up from a third): server replays of the
-    # opponents that actually beat us in production (Gang, clankerbot, JaniceKeepTalking --
-    # see STRATEGY_v10.md 3) show they all run a small, fixed extractor count (3-4) and
-    # 30-38% healers, reaching the 32-bot cap with more fighting bodies per slot than a
-    # 6-extractor build.  `EXTRACTOR_CUTOFF`/`_endgame_convert` claw the rest of the
-    # economy's value back into guns once the fight that decides the match is close.
+    # them by mid game), ten battle bots and four healers win the first fight.  A third of
+    # the fighting force stays healers: sustain beat raw guns in every head-to-head.
     OPENING = _env("IAMABOT_OPENING", "EBBEHBEBBHBBHBBHB")
-    EXTRACTOR_TARGET = _env("IAMABOT_EXTRACTORS", 4)
-    HEALER_RATIO = _env("IAMABOT_HEALER_RATIO", 0.36)
+    EXTRACTOR_TARGET = _env("IAMABOT_EXTRACTORS", 6)
+    HEALER_RATIO = _env("IAMABOT_HEALER_RATIO", 0.33)
     EXTRACTOR_CUTOFF = 4300  # an extractor built later cannot pay for itself
-    CONVERT_WINDOW = _env("IAMABOT_CONVERT_WINDOW", 80)  # ticks before the cutoff
-    CONVERT_KEEP = _env("IAMABOT_CONVERT_KEEP", 1)  # extractors left as the hideout body
 
     # Engagement distances (to the nearest enemy fighter) per stance.
     D_ATTACK = _env("IAMABOT_D_ATTACK", 6.3)
@@ -664,34 +656,6 @@ class AdvancedStrategy:
             and total < BOTS_MAX
             and state.fabricator_me.tokens >= self.conf.fabricator.rush_cost
         )
-        self._endgame_convert(state, act, me, counts, T)
-
-    def _endgame_convert(self, state, act: FleetAction, me: list, counts, T) -> None:
-        """Tokens banked so far are wasted the instant production stops, and an idle
-        extractor is dead weight in the fight that actually decides the match.  Real
-        opponents exploit this: DIBSFA (`_endgame_extractors`'s sibling `DibsfaConvert` in
-        the arena) and, per the server replays behind STRATEGY_v10.md, the current Gang
-        both self-destruct every extractor and rush battle bots into the freed slots in
-        the last ticks before the cutoff (matches #729/#804: Gang went 8->0 extractors,
-        +6 battle, at the exact tick production stops, then out-gunned us in the endgame
-        collision we lost both times).  We do the same here, keeping `CONVERT_KEEP`
-        extractors alive as the endgame hideout body (`_endgame_extractors`) so this
-        doesn't reopen the fleet-wipe risk that body exists to close."""
-        if not (self.END_T - self.CONVERT_WINDOW <= T < self.END_T):
-            return
-        act.fabricator_next = BATTLE
-        cost = self.conf.fabricator.rush_cost
-        rushing = bool(act.rush_order)
-        if state.fabricator_me.tokens - (cost if rushing else 0) < cost:
-            return  # can't afford another rush order this tick
-        if BOTS_MAX - len(me) - (1 if rushing else 0) > 0:
-            return  # still room to grow naturally/via the rush already queued
-        _, _, ne = counts
-        if ne <= self.CONVERT_KEEP:
-            return
-        extractors = [u for u in me if u.cls == EXTRACTOR]
-        if extractors:
-            act.bots[extractors[0].id].self_destruct = True
 
     def _next_class(self, counts, T) -> int:
         nb, nh, ne = counts

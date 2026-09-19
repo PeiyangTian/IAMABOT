@@ -22,5 +22,9 @@ def get_strategy(team: int) -> Strategy:
         "cover": opponents.PayloadCover,
         "dibsfa": opponents.DibsfaConvert,
         "dibsfa_turtle": opponents.DibsfaTurtle,
+        "gang_turtle": opponents.GangTurtle,
+        "clanker_sustain": opponents.ClankerSustain,
+        "teamname_push": opponents.TeamNamePush,
+        "potatoes_econ": opponents.PotatoesEcon,
     }
     return table[name]()
