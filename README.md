@@ -3,6 +3,7 @@
 A competition bot for [MechMania](https://mechmania.github.io/) 2026 — a real-time
 strategy game where two fleets fight over a payload. Python strategy, with a Rust FFI
 shim so the bot calls the engine's own pathfinding instead of reimplementing it.
+**The team finished seventh.**
 
 **This is a three-person team project.** Yixuan ZHANG wrote the controller and the
 regression arena; tracira and I contributed on top of it. Setup instructions are in
