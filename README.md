@@ -1,47 +1,84 @@
-# Getting started with python
+# IAMABOT
 
-1. Install [rust](https://www.rust-lang.org/tools/install) — yes, for a Python bot. See
-   [Why rust?](#why-rust) below.
+A competition bot for [MechMania](https://mechmania.github.io/) 2026 — a real-time
+strategy game where two fleets fight over a payload. Python strategy, with a Rust FFI
+shim so the bot calls the engine's own pathfinding instead of reimplementing it.
 
-2. Make sure you have [git](https://git-scm.com/downloads)
+**This is a three-person team project.** Yixuan ZHANG wrote the controller and the
+regression arena; tracira and I contributed on top of it. Setup instructions are in
+[`SETUP.md`](SETUP.md); `git log` and `git blame` are the authoritative record of who
+wrote what.
 
-3. Make sure you have python
+## My contribution — Peiyang Tian
 
-4. Install `mm-cli`: `cargo install --git https://github.com/mechmania/cli`
+**v10: the local test suite was green while we were losing on the server.**
 
-5. Set up your project:
-   - **Starting a new team?** In an empty directory, run `mm-cli init` and pick `python` when
-     prompted. This fetches the starterpack and the engine, and builds you a working bot.
-   - **Joining a teammate who already ran `init`?** In an empty directory, run
-     `mm-cli clone <your-team-repo-url>`.
+By v9 our regression arena reported 87 wins out of 88 against the full opponent roster.
+The real match database told a different story — against the four teams that mattered we
+were 1–17:
 
-6. Use `mm-cli help` for the full command list. To run a match against yourself, use `mm-cli run`.
+| Opponent | Real server record (IAMABOT's view) |
+|---|---|
+| Gang | 0–5 |
+| clankerbot | 1–5 |
+| JaniceKeepTalking | 0–4 |
+| Team Name | 0–3 |
 
-# Why rust?
+The local matrix had not surfaced any of it, because the opponent models it played against
+were built from replays that were by then months stale — and those teams had kept
+developing.
 
-Your bot calls the engine's *own* code for the things you would otherwise have to
-reimplement, the most expensive being pathfinding.
+So I went to the real data:
 
-So `mm-cli run` doesn't just launch your bot — it also:
+1. Pulled every IAMABOT match against six named teams from the competition's public API,
+   and reconstructed our complete head-to-head history.
+2. Downloaded the per-tick NDJSON logs and wrote a parser for them. The format is
+   delta-encoded — after the first tick, fleets arrive as `{added, changed, removed}` — so
+   the parser replays the deltas to rebuild full fleet state at every tick, then measures
+   build order, casualty curves, engagement distance, formation spacing, map control split,
+   and payload progress.
+3. Checked the v9 opponent models against what the teams were actually doing. Three of the
+   four had changed their play entirely; the fourth we had modelled correctly but reproduced
+   far too weakly.
+4. Found two fixes that the measurements pointed at directly — the endgame never converted
+   miners into fighters, and economy over-investment left fewer combat units at equal
+   supply — and validated both through the arena under its no-regression rule: a change
+   ships only if it loses no game the baseline won, on the full roster, from both sides.
+5. Rebuilt four opponent models from the real replays and added them back to the arena, so
+   the next time the server and the local matrix disagree, the matrix catches it first.
 
-- compiles `native/`, a thin Rust shim around the engine, into a shared library, and
-- runs a generator that reads the engine's own struct layouts and writes
-  `core/_generated/`, the `ctypes` bindings your bot imports.
+The write-up, in Chinese, is [`strategy/STRATEGY_v10.md`](strategy/STRATEGY_v10.md); its
+final section documents the API calls and log format so the study can be repeated. Earlier
+versions — [v6.1](strategy/STRATEGY_v6.1.md), [v7](strategy/STRATEGY_v7.md),
+[v8](strategy/STRATEGY_v8.md), [v9](strategy/STRATEGY_v9.md) — trace how the strategy got
+there.
 
-Both come out of the same build, so they cannot drift apart. A few practical notes:
+**Known limits, from that write-up:** each team was reconstructed from only one or two
+matches, so the models are a snapshot of opponents that keep changing; and the economy
+change is global, with a measured cost against one style of opponent that was judged worth
+the gain against the three teams actually beating us.
 
-- **The first build needs network**, to fetch the engine. Later builds are cached and fast.
-- **`core/_generated/` is generated output.** It is gitignored on purpose. Don't edit it and
-  don't commit it — if your editor can't resolve `GameState` or `FleetAction`, run
-  `mm-cli run` once and it will.
-- **Only `strategy/` is yours**, and it's the only thing `mm-cli submit` uploads and the only
-  thing `mm-cli init`/`clone`/`update` ever leave alone. Everything else here — `native/`,
-  `core/_generated/`, the installed engine — is regenerated by `mm-cli` and gitignored; don't
-  hand-edit it, a future `mm-cli update` will overwrite it.
+## How the bot works
 
-# Submitting your code
+Credit for the design below goes to the team; it is summarised here so the repository reads
+on its own. [`strategy/README.md`](strategy/README.md) has the full version.
 
-1. Register your team with `mm-cli register`. If you are already registered, login with `mm-cli login`
+- **Fire control.** Before a trigger is pulled the shot is replayed exactly as the engine
+  resolves it — the shooter's post-move pose, the ray stopping at the first hull, splash on
+  everything within range of that point — and only fires if it lands under both the
+  predicted and the stationary enemy layout.
+- **Target assignment.** Aims are allocated globally by value against time-to-land, capped
+  per target, so one volley never wastes five shots on one invulnerable bot.
+- **Regression arena** ([`tools/arena`](tools/arena/README.md)). Every tactical change is
+  judged on the same opponents, from both sides, against a recorded baseline. `results/`
+  keeps the raw JSONL behind each decision.
 
-2. Then submit with `mm-cli submit`.
+## Layout
 
+| Path | What |
+|---|---|
+| `strategy/` | the controller and the strategy write-ups |
+| `tools/arena/` | regression harness, opponent roster, replay analysis |
+| `core/`, `native/`, `__main__.py` | starterpack and generated bindings, from [mechmania/cli](https://github.com/mechmania/cli) — not our work |
+
+Upstream team repository: [asher0913/IAMABOT](https://github.com/asher0913/IAMABOT).
